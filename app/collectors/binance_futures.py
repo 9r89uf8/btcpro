@@ -41,6 +41,7 @@ class BinanceFuturesCollector(BaseCollector):
         self._book_last_sync_ms: int | None = None
         self._last_futures_bbo_key: tuple[float, float] | None = None
         self._trade_queue: asyncio.Queue | None = None
+        self._last_book_event_ms: int | None = None
         self._last_public_event_ms: int | None = None
         self._last_trades_event_ms: int | None = None
         self._last_market_event_ms: int | None = None
@@ -257,6 +258,7 @@ class BinanceFuturesCollector(BaseCollector):
     async def _handle_depth_delta(self, event: BookDeltaEvent) -> None:
         """Buffer every delta. If book is synced, also apply it live."""
         self._buffered_deltas.append(event)
+        self._last_book_event_ms = self.now_ms()
 
         if not self.book.synced:
             # Not synced yet — just buffer. _sync_local_book will replay.
@@ -483,10 +485,21 @@ class BinanceFuturesCollector(BaseCollector):
         self._book_sync_status = status
         self._book_sync_reason = reason
 
-    async def _publish_book_state(self) -> None:
+    def _book_state_payload(self) -> dict[str, Any]:
         best_bid, best_ask = self.book.top()
-        payload = {
-            "venue": "binance_futures",
+        now_ms = self.now_ms()
+        book_age_ms = (now_ms - self._last_book_event_ms) if self._last_book_event_ms else None
+
+        # Depth metrics (cheap local computation)
+        bid_5, ask_5 = self.book.notional_within_bps(5) if self.book.synced else (0.0, 0.0)
+        bid_10, ask_10 = self.book.notional_within_bps(10) if self.book.synced else (0.0, 0.0)
+        denom_5 = bid_5 + ask_5
+        denom_10 = bid_10 + ask_10
+        imbalance_5bps = (bid_5 - ask_5) / denom_5 if denom_5 > 0 else 0.0
+        imbalance_10bps = (bid_10 - ask_10) / denom_10 if denom_10 > 0 else 0.0
+
+        return {
+            "venue": BINANCE_FUTURES,
             "symbol": self.symbol.upper(),
             "synced": self.book.synced,
             "sync_status": self._book_sync_status,
@@ -494,11 +507,21 @@ class BinanceFuturesCollector(BaseCollector):
             "buffered_deltas": len(self._buffered_deltas),
             "last_sync_at_ms": self._book_last_sync_ms,
             "last_update_id": self.book.last_update_id,
+            "book_age_ms": book_age_ms,
+            "book_stale": book_age_ms is not None and book_age_ms > PUBLIC_FEED_STALE_MS,
             "best_bid_px": best_bid[0] if best_bid else None,
+            "best_bid_sz": best_bid[1] if best_bid else None,
             "best_ask_px": best_ask[0] if best_ask else None,
+            "best_ask_sz": best_ask[1] if best_ask else None,
             "mid_px": self.book.mid(),
+            "depth_imbalance_5bps": imbalance_5bps,
+            "depth_imbalance_10bps": imbalance_10bps,
+            "near_touch_bid_usd": bid_5,
+            "near_touch_ask_usd": ask_5,
         }
-        await self.bus.set_json(Keys.book(BINANCE_FUTURES), payload)
+
+    async def _publish_book_state(self) -> None:
+        await self.bus.set_json(Keys.book(BINANCE_FUTURES), self._book_state_payload())
 
     async def _publish_collector_state(self, now_ms: int | None = None) -> None:
         await self.bus.set_json(Keys.collector(BINANCE_FUTURES), self._collector_state_payload(now_ms))

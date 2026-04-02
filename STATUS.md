@@ -20,14 +20,14 @@
 - **RedisBus** (`app/bus.py`) — async Redis wrapper for pub/sub + latest-state key/value.
 - **Contract Layer** (`app/contract.py`) — centralized venue constants plus shared Redis channel/key builders for raw events, derived events, latest-state keys, and book-state keys. This is now the source of truth for symbol casing and Redis naming conventions.
 - **Models** (`app/models.py`) — Pydantic schemas for TradeEvent, BBOEvent, BookDeltaEvent, MarkIndexEvent, LiquidationEvent, OpenInterestEvent, FeatureBar, ScoreSnapshot.
-- **LocalBook** (`app/books/`) — shared order book helper for Binance futures and spot, with snapshot bootstrap, delta application, desync detection, and snapshot bridging rules for both the futures `pu` path and the spot `U/u` path. Exposes top-of-book, mid, depth within bps, and imbalance.
+- **LocalBook** (`app/books/`) — shared order book helper for Binance futures and spot, with snapshot bootstrap, delta application, desync detection, and snapshot bridging rules for both the futures `pu` path and the spot `U/u` path. Exposes top-of-book, mid, depth within bps, and imbalance. Futures book state now surfaces best bid/ask prices and sizes, depth imbalance, near-touch depth, sync timing, and book freshness.
 
 ### Feature Engine (app/features/)
 - Subscribes to raw Redis channels, maintains rolling CVD windows (1s/5s/15s) for perp and spot.
 - Tracks premium history, OI history, liquidation skew (30s window).
 - Emits a `FeatureBar` every 1 second with all computed features.
 - Z-score series for scoring inputs.
-- **Known gap**: local book depth stats are placeholder — not wired to real LocalBook yet.
+- Futures depth metrics are now real: `book_sync_ok`, `depth_imbalance_5bps`, `depth_imbalance_10bps`, `near_touch_depth_*_usd`, and `depth_pull_*_5s` are computed from the synchronized in-process futures local book.
 
 ### Score Engine (app/features/scoring.py)
 - Weighted linear score matching the README spec weights.
@@ -61,9 +61,9 @@
 
 ## Current Phase
 
-**Sections 0 (Bootstrap), 1 (Normalize Contracts), and 2 (Binance Futures Collector) are complete.**
+**Sections 0 (Bootstrap), 1 (Normalize Contracts), 2 (Binance Futures Collector), and 3 (Futures Local Order Book) are complete.**
 
-Sections 3–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
+Sections 4–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
 
 ---
 
@@ -74,7 +74,7 @@ Sections 3–11 from the master plan have not been formally worked through yet. 
 | 0 | Bootstrap | **Done** | Scaffold extracted, deps installed, Redis connected, launcher working |
 | 1 | Normalize Contracts | **Done** | Central contract layer added, symbol casing rules standardized, API/collectors/features use shared channel and key builders |
 | 2 | Binance Futures Collector | **Done** | Separated `/public` and `/market` routing validated, futures trade/mark/liquidation normalization checked, feed-age diagnostics added |
-| 3 | Futures Local Order Book | Not started | Wire LocalBook into live path, snapshot bootstrap, delta continuity, resync, book health |
+| 3 | Futures Local Order Book | **Done** | Futures local book sync is live, sync telemetry is exposed, and real depth/near-touch/freshness metrics are available to API and features |
 | 4 | Binance Spot Collector | Not started | Validate spot trade normalization, BBO parsing, depth handling |
 | 5 | Open Interest Poller | Not started | Validate OI units (BTC not USD), polling rate, error surfacing |
 | 6 | Feature Engine | Not started | Replace placeholder depth stats, wire real local book, verify rolling window behavior |
@@ -107,8 +107,9 @@ Sections 3–11 from the master plan have not been formally worked through yet. 
 - Fix: split futures trades onto their own websocket loop, keep markPrice and liquidations on a separate low-volume loop, and throttle latest-state trade writes while still publishing trade events for the feature engine.
 - Operational result: futures trade and mark/index timestamps are now close to local time, `/latest/trade/futures` remains available for inspection, and `/latest/collector/futures` exposes public/trade/market feed ages.
 
-### Local Book — Partially Wired
-- `LocalBook` is now connected to both the futures and spot live depth streams, exposes sync telemetry through `/latest/book/futures` and `/latest/book/spot`, and is the source of BBO for both venues when synchronized. However, the feature engine still uses placeholder values for `depth_imbalance`, `near_touch_depth`, and `depth_pull`. Wiring those is Section 6 work.
+### Futures Book Health
+- Futures book sync is now live and exposed through `/latest/book/futures`, including `sync_status`, `sync_reason`, `best_bid/ask`, `depth_imbalance_5bps`, `depth_imbalance_10bps`, `near_touch_bid/ask_usd`, `book_age_ms`, and `book_stale`.
+- The feature engine now reads the synchronized in-process futures book directly for real depth-derived features and `book_sync_ok`.
 
 ### Spot BBO — Resolved
 - The original symptom was that spot barely moved relative to perp even when the status showed `spot_px: bbo`. Root cause: spot depth and spot trades shared one websocket loop, and synchronous remote Redis writes for trades starved the depth path.

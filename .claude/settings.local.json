@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -c ':*)",
+      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -m pytest tests/ -v)"
+    ]
+  }
+}

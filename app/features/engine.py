@@ -24,8 +24,10 @@ class FeatureEngine:
         self.bus = bus
         self.settings = get_settings()
         self.symbol = self.settings.symbol.upper()
-        # In-process trade queues — collectors push directly, no Redis
+        # In-process trade queue — collectors push directly, no Redis
         self.trade_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        # In-process book reference — set by run_all.py
+        self.futures_book: Any = None
 
         self.perp_cvd_1s = RollingSignedWindow(1000)
         self.perp_cvd_5s = RollingSignedWindow(5000)
@@ -52,14 +54,9 @@ class FeatureEngine:
         self.latest_futures_bbo: dict | None = None
         self.latest_spot_bbo: dict | None = None
 
-        self.latest_depth_imbalance_10bps: float = 0.0
-        self.latest_depth_imbalance_5bps: float = 0.0
-        self.latest_bid_depth_usd: float = 0.0
-        self.latest_ask_depth_usd: float = 0.0
-        self.latest_bid_depth_usd_5s_ago: float = 0.0
-        self.latest_ask_depth_usd_5s_ago: float = 0.0
+        # Depth pull tracking (5s history)
+        self._depth_history: deque[tuple[int, float, float]] = deque(maxlen=60)
 
-        self.book_sync_ok: bool = True
         self.feed_lags: deque[float] = deque(maxlen=200)
 
     async def run(self) -> None:
@@ -167,7 +164,30 @@ class FeatureEngine:
             spread_bps = float(self.latest_futures_bbo["spread_bps"]) if self.latest_futures_bbo else 0.0
             feed_lag_p95 = sorted(self.feed_lags)[int(0.95 * (len(self.feed_lags) - 1))] if self.feed_lags else 0.0
 
-            # TODO: wire real local-book depth stats here.
+            # Real depth metrics from the local book
+            book = self.futures_book
+            book_sync_ok = book.synced if book else False
+            if book and book.synced:
+                imbalance_5bps = book.imbalance_within_bps(5)
+                imbalance_10bps = book.imbalance_within_bps(10)
+                bid_depth_5, ask_depth_5 = book.notional_within_bps(5)
+            else:
+                imbalance_5bps = 0.0
+                imbalance_10bps = 0.0
+                bid_depth_5 = 0.0
+                ask_depth_5 = 0.0
+
+            # Depth pull: current depth minus depth 5 seconds ago
+            self._depth_history.append((now_ms, bid_depth_5, ask_depth_5))
+            depth_pull_bid = 0.0
+            depth_pull_ask = 0.0
+            target_ts = now_ms - 5000
+            for ts, bid_past, ask_past in reversed(self._depth_history):
+                if ts <= target_ts:
+                    depth_pull_bid = bid_depth_5 - bid_past
+                    depth_pull_ask = ask_depth_5 - ask_past
+                    break
+
             feature_bar = FeatureBar(
                 symbol=self.symbol,
                 bar_ts=now_ms,
@@ -179,16 +199,16 @@ class FeatureEngine:
                 spot_cvd_15s=spot_15,
                 premium_bps=premium_bps,
                 delta_premium_bps_5s=delta_premium,
-                depth_imbalance_5bps=self.latest_depth_imbalance_5bps,
-                depth_imbalance_10bps=self.latest_depth_imbalance_10bps,
+                depth_imbalance_5bps=imbalance_5bps,
+                depth_imbalance_10bps=imbalance_10bps,
                 spread_bps=spread_bps,
-                near_touch_depth_bid_usd=self.latest_bid_depth_usd,
-                near_touch_depth_ask_usd=self.latest_ask_depth_usd,
-                depth_pull_bid_5s=self.latest_bid_depth_usd - self.latest_bid_depth_usd_5s_ago,
-                depth_pull_ask_5s=self.latest_ask_depth_usd - self.latest_ask_depth_usd_5s_ago,
+                near_touch_depth_bid_usd=bid_depth_5,
+                near_touch_depth_ask_usd=ask_depth_5,
+                depth_pull_bid_5s=depth_pull_bid,
+                depth_pull_ask_5s=depth_pull_ask,
                 oi_delta_30s=oi_delta,
                 liq_skew_30s=liq_skew,
-                book_sync_ok=self.book_sync_ok,
+                book_sync_ok=book_sync_ok,
                 feed_lag_ms_p95=feed_lag_p95,
             )
 
@@ -215,7 +235,7 @@ class FeatureEngine:
             score_1m = score_linear(inputs)
             score_3m = 0.75 * score_1m
             score_5m = 0.60 * score_1m
-            data_quality_score = 1.0 if self.book_sync_ok else 0.2
+            data_quality_score = 1.0 if book_sync_ok else 0.2
 
             snapshot = build_score_snapshot(
                 symbol=self.symbol,

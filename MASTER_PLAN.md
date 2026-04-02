@@ -125,26 +125,26 @@ Goal:
 
 Build tasks:
 
-- [ ] Buffer depth deltas on connect
-- [ ] Fetch the REST snapshot with `fetch_binance_futures_snapshot()`
-- [ ] Apply only deltas that correctly bridge the snapshot
-- [ ] Validate `prev_final_update_id` continuity on every delta
-- [ ] Resnapshot automatically on desync
-- [ ] Expose `book_sync_ok`, best bid/ask, depth metrics, and freshness
+- [x] Buffer depth deltas on connect
+- [x] Fetch the REST snapshot with `fetch_binance_futures_snapshot()`
+- [x] Apply only deltas that correctly bridge the snapshot
+- [x] Validate `prev_final_update_id` continuity on every delta
+- [x] Resnapshot automatically on desync
+- [x] Expose `book_sync_ok`, best bid/ask, depth metrics, and freshness
 
 Data correctness checks:
 
-- [ ] `book.top()` matches Binance UI within one tick
-- [ ] `book.mid()` is close to live trade price
-- [ ] `best_bid < best_ask` always holds
-- [ ] `notional_within_bps(10)` returns realistic USD depth
-- [ ] `imbalance_within_bps(10)` stays within `[-1, 1]`
+- [x] `book.top()` matches Binance UI within one tick
+- [x] `book.mid()` is close to live trade price
+- [x] `best_bid < best_ask` always holds
+- [x] `notional_within_bps(10)` returns realistic USD depth
+- [x] `imbalance_within_bps(10)` stays within `[-1, 1]`
 
 Tests to add:
 
-- [ ] Snapshot bootstrap behavior
-- [ ] Delta continuity acceptance
-- [ ] Desync detection and resync behavior
+- [x] Snapshot bootstrap behavior
+- [x] Delta continuity acceptance
+- [x] Desync detection and resync behavior
 
 Definition of done:
 
