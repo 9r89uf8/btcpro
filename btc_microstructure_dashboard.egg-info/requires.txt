@@ -1,0 +1,13 @@
+fastapi>=0.116
+uvicorn[standard]>=0.35
+httpx>=0.28
+websockets>=15.0
+redis>=6.2
+pydantic>=2.11
+pydantic-settings>=2.10
+orjson>=3.11
+numpy>=2.0
+pandas>=2.2
+plotly>=6.0
+dash>=3.0
+sortedcontainers>=2.4

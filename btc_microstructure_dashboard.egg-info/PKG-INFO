@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: btc-microstructure-dashboard
+Version: 0.1.0
+Summary: Starter skeleton for BTC 1-5 minute microstructure dashboard
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.116
+Requires-Dist: uvicorn[standard]>=0.35
+Requires-Dist: httpx>=0.28
+Requires-Dist: websockets>=15.0
+Requires-Dist: redis>=6.2
+Requires-Dist: pydantic>=2.11
+Requires-Dist: pydantic-settings>=2.10
+Requires-Dist: orjson>=3.11
+Requires-Dist: numpy>=2.0
+Requires-Dist: pandas>=2.2
+Requires-Dist: plotly>=6.0
+Requires-Dist: dash>=3.0
+Requires-Dist: sortedcontainers>=2.4

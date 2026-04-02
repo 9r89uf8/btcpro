@@ -1,0 +1,124 @@
+# BTC Microstructure Dashboard — Build Status
+
+## What Has Been Built
+
+### Infrastructure
+- Extracted scaffold from `btc_microstructure_dashboard_handoff.zip` into repo root
+- Fixed `pyproject.toml` package discovery for multi-package layout (`app/`, `dashboard/`)
+- All dependencies installed and importable
+- `.env` configured with remote Redis Cloud instance (redis.io)
+- Redis connectivity verified
+
+### Collectors (app/collectors/)
+- **Binance Futures** — websocket collector on separated routing (`/public` for book feeds, `/market` for aggTrade/markPrice/liquidations). Trades, mark/index, and liquidations still publish to Redis. High-frequency `bookTicker` and raw depth deltas no longer publish to remote Redis; depth is buffered locally for local-book sync, and futures BBO is derived from the synchronized local book.
+- **Binance Spot** — collector split into separate trade and depth websocket loops. Trades still publish to Redis for spot CVD. Spot depth stays local, synchronizes a local spot book via REST snapshot + live deltas, and spot BBO is derived from the synchronized local book with bid/ask-price dedupe before publishing.
+- **Binance OI Poller** — REST poller hitting `/fapi/v1/openInterest` every 1 second.
+- **Bybit** — optional confirmation collector for trades and liquidations (starter-level, passthrough for ticker/orderbook).
+- All collectors have reconnect + backoff + logging on disconnect.
+
+### Data Layer
+- **RedisBus** (`app/bus.py`) — async Redis wrapper for pub/sub + latest-state key/value.
+- **Models** (`app/models.py`) — Pydantic schemas for TradeEvent, BBOEvent, BookDeltaEvent, MarkIndexEvent, LiquidationEvent, OpenInterestEvent, FeatureBar, ScoreSnapshot.
+- **LocalBook** (`app/books/`) — shared order book helper for Binance futures and spot, with snapshot bootstrap, delta application, desync detection, and snapshot bridging rules for both the futures `pu` path and the spot `U/u` path. Exposes top-of-book, mid, depth within bps, and imbalance.
+
+### Feature Engine (app/features/)
+- Subscribes to raw Redis channels, maintains rolling CVD windows (1s/5s/15s) for perp and spot.
+- Tracks premium history, OI history, liquidation skew (30s window).
+- Emits a `FeatureBar` every 1 second with all computed features.
+- Z-score series for scoring inputs.
+- **Known gap**: local book depth stats are placeholder — not wired to real LocalBook yet.
+
+### Score Engine (app/features/scoring.py)
+- Weighted linear score matching the README spec weights.
+- State classification (bullish_pressure / mild_bullish / neutral / mild_bearish / bearish_pressure).
+- Confidence calculation with book sync gating.
+- Reason string generation.
+- 3m and 5m scores are currently scaled placeholders (0.75x and 0.60x of 1m score).
+
+### API (app/api/main.py)
+- FastAPI on port 8000.
+- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/bbo/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`.
+- `/history/features` is a placeholder (not implemented).
+
+### Dashboard (dashboard/app.py)
+- Dash app on port 8050 with dark theme.
+- Live charts: price (perp local-book BBO vs spot local-book BBO or trade fallback), premium bps, perp CVD 5s.
+- Status block: top-line price/state/score metrics plus separate futures and spot book-sync/source rows.
+- Polls `/latest/all` every 5 seconds.
+
+### Unified Launcher (run_all.py)
+- Single `python run_all.py` starts everything: futures collector, spot collector, OI poller, feature engine, API server, dashboard.
+- Graceful shutdown on Ctrl+C.
+
+### Tests
+- `test_bullish_score_positive` — verifies bullish z-score inputs produce positive score.
+- `test_bearish_score_negative` — verifies bearish z-score inputs produce negative score.
+- `test_binance_local_book.py` — covers snapshot bootstrap, spot bridge acceptance via `lastUpdateId + 1`, futures `pu` bridge handling, and continuity mismatch behavior.
+
+---
+
+## Current Phase
+
+**Section 0 (Bootstrap) is complete.**
+
+Sections 1–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
+
+---
+
+## Phases Remaining
+
+| Section | Name | Status | Summary |
+|---------|------|--------|---------|
+| 0 | Bootstrap | **Done** | Scaffold extracted, deps installed, Redis connected, launcher working |
+| 1 | Normalize Contracts | Not started | Standardize symbol casing, event schemas, Redis key naming, shared emit helpers |
+| 2 | Binance Futures Collector | Not started | Validate trade side logic, notional calc, mark/index parsing, liquidation shape |
+| 3 | Futures Local Order Book | Not started | Wire LocalBook into live path, snapshot bootstrap, delta continuity, resync, book health |
+| 4 | Binance Spot Collector | Not started | Validate spot trade normalization, BBO parsing, depth handling |
+| 5 | Open Interest Poller | Not started | Validate OI units (BTC not USD), polling rate, error surfacing |
+| 6 | Feature Engine | Not started | Replace placeholder depth stats, wire real local book, verify rolling window behavior |
+| 7 | Score Engine | Not started | Real 3m/5m scores, confidence gating for stale feeds, degraded state behavior |
+| 8 | FastAPI Server | Not started | Real health reporting, history endpoints, feed age tracking |
+| 9 | Dashboard UI | Not started | Full ribbon, price/state chart, premium chart, CVD chart, depth chart, OI/liq chart, right column |
+| 10 | Unified Runtime | Not started | Startup ordering, graceful shutdown, stale-feed alerts, documentation |
+| 11 | Bybit Confirmation | Not started | Validate Bybit parsing, normalize trades/liquidations, expose confirmation signals |
+
+---
+
+## Known Issues & Things To Watch
+
+### Dashboard Performance
+- **The dashboard cannot handle polling faster than 5 seconds.** At 1–2 second intervals the tab shows "Updating..." and becomes unresponsive. This is due to Dash rebuilding the full Plotly figure on every callback. If faster updates are needed later, switch to WebSocket push or Dash clientside callbacks.
+
+### Perp BBO — Root Cause Found
+- The original symptom was stale perp BBO on the dashboard. The root cause chain was:
+- `bookTicker` was stale, so the collector needed a synchronized local depth book.
+- The local book could not complete snapshot bridging because the websocket loop was starved.
+- The websocket loop was starved because every futures `bookTicker` and every raw depth delta performed two round-trips to remote Redis Cloud (`publish` + `set`), which throttled the hot path badly enough that bridging deltas never stayed available.
+- Fix: stop publishing high-frequency futures `bookTicker` and raw depth deltas to remote Redis. Keep depth local for book sync and publish only the derived futures BBO once the local book is synchronized.
+- Operational result: the dashboard should show `perp_bbo: local_book` when the futures book is synced and `perp_bbo: fallback` during startup/resync.
+
+### Remote Redis Latency
+- **Do not publish high-frequency data to the remote Redis Cloud instance.** Each Redis call is ~50ms round-trip. Publishing every bookTicker or depth delta (10–50 messages/sec) throttles the websocket loop to <1 msg/sec, breaking local book sync and causing stale data. Only publish derived/aggregated state (BBO from synced book, trades, features, scores). Raw depth deltas are consumed locally only.
+
+### Local Book — Partially Wired
+- `LocalBook` is now connected to both the futures and spot live depth streams, exposes sync telemetry through `/latest/book/futures` and `/latest/book/spot`, and is the source of BBO for both venues when synchronized. However, the feature engine still uses placeholder values for `depth_imbalance`, `near_touch_depth`, and `depth_pull`. Wiring those is Section 6 work.
+
+### Spot BBO — Resolved
+- The original symptom was that spot barely moved relative to perp even when the status showed `spot_px: bbo`. Root cause: spot depth and spot trades shared one websocket loop, and synchronous remote Redis writes for trades starved the depth path.
+- Fix: split spot trades and spot depth into separate websocket loops, keep spot depth local, synchronize a local spot book from REST snapshot + live deltas, and publish only derived spot BBO with bid/ask-price dedupe.
+- Operational result: the dashboard should show `spot_book: synced (snapshot_bridged)` and `spot_px: local_book` when the spot local book is healthy.
+
+### 3m/5m Scores Are Fake
+- `score_3m = 0.75 * score_1m` and `score_5m = 0.60 * score_1m`. These need real rolling score history. Section 7 work.
+
+### History Endpoints Not Implemented
+- `/history/features` and `/history/score` return placeholder responses. Need a storage strategy (Redis sorted sets or in-memory ring buffers). Section 8 work.
+
+### No Raw Event Archival
+- Raw events are published to Redis pub/sub but not persisted. Replay and backtesting require an archive layer (ClickHouse, Parquet, or Redis Streams). Phase 2 work.
+
+### Redis Key Consistency
+- The latest-state key naming was fixed during bootstrap (`state:latest:` prefix without `raw:`), but the full Redis contract from the README has not been audited end-to-end. Section 1 work.
+
+### OI Poller Error Handling
+- Now logs warnings on failure instead of silently passing, but does not track consecutive failures or surface them to the health endpoint. Section 5 work.
