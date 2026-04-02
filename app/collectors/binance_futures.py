@@ -12,9 +12,13 @@ import websockets
 from app.books.binance_local_book import LocalBook, fetch_binance_futures_snapshot
 from app.collectors.base import BaseCollector
 from app.config import get_settings
+from app.contract import BINANCE_FUTURES, Channels, Keys
 from app.models import BBOEvent, BookDeltaEvent, LiquidationEvent, MarkIndexEvent, TradeEvent
 
 logger = logging.getLogger(__name__)
+
+PUBLIC_FEED_STALE_MS = 5000
+MARKET_FEED_STALE_MS = 5000
 
 
 class BinanceFuturesCollector(BaseCollector):
@@ -35,16 +39,26 @@ class BinanceFuturesCollector(BaseCollector):
         self._book_sync_status = "idle"
         self._book_sync_reason = "startup"
         self._book_last_sync_ms: int | None = None
+        self._last_futures_bbo_key: tuple[float, float] | None = None
+        self._trade_queue: asyncio.Queue | None = None
+        self._last_public_event_ms: int | None = None
+        self._last_trades_event_ms: int | None = None
+        self._last_market_event_ms: int | None = None
+        self._public_feed_stale = False
+        self._trades_feed_stale = False
+        self._market_feed_stale = False
+        self._last_trade_state_write_ms: int = 0
 
     async def run(self) -> None:
         await asyncio.gather(
             self.run_public(),
+            self.run_trades(),
             self.run_market(),
+            self._watch_feeds(),
         )
 
     async def run_public(self) -> None:
-        stream = f"{self.symbol}@bookTicker/{self.symbol}@depth@100ms"
-        url = f"{self.settings.binance_futures_public_ws}/stream?streams={stream}"
+        url = self._public_stream_url()
         attempt = 0
         while True:
             try:
@@ -57,6 +71,7 @@ class BinanceFuturesCollector(BaseCollector):
                         msg = json.loads(raw)
                         stream_name = msg["stream"]
                         data = msg["data"]
+                        self._last_public_event_ms = self.now_ms()
                         if stream_name.endswith("@bookTicker"):
                             # Skip — local book provides BBO once synced,
                             # mark price is the fallback before that.
@@ -74,9 +89,38 @@ class BinanceFuturesCollector(BaseCollector):
                 logger.warning("Futures public ws disconnected, reconnect attempt %d", attempt, exc_info=True)
                 await self.sleep_backoff(attempt)
 
+    async def run_trades(self) -> None:
+        """Dedicated loop for aggTrade — high frequency, publish-only."""
+        url = self._trades_stream_url()
+        attempt = 0
+        while True:
+            try:
+                async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_queue=10000) as ws:
+                    attempt = 0
+                    async for raw in ws:
+                        msg = json.loads(raw)
+                        data = msg["data"]
+                        self._last_trades_event_ms = self.now_ms()
+                        event = self._parse_trade(data)
+                        # Push to in-process queue for feature engine (zero latency)
+                        if self._trade_queue is not None:
+                            self._trade_queue.put_nowait(event.model_dump())
+                        # Throttled latest-state write (~1/sec) so API endpoint works
+                        now = self.now_ms()
+                        if now - self._last_trade_state_write_ms >= 1000:
+                            self._last_trade_state_write_ms = now
+                            await self.bus.set_json(
+                                Keys.latest("trade", BINANCE_FUTURES),
+                                event.model_dump(),
+                            )
+            except Exception:
+                attempt += 1
+                logger.warning("Futures trades ws disconnected, reconnect attempt %d", attempt, exc_info=True)
+                await self.sleep_backoff(attempt)
+
     async def run_market(self) -> None:
-        stream = f"{self.symbol}@aggTrade/{self.symbol}@markPrice@1s/!forceOrder@arr"
-        url = f"{self.settings.binance_futures_market_ws}/stream?streams={stream}"
+        """Low-volume loop for markPrice + liquidations."""
+        url = self._market_stream_url()
         attempt = 0
         while True:
             try:
@@ -86,20 +130,45 @@ class BinanceFuturesCollector(BaseCollector):
                         msg = json.loads(raw)
                         stream_name = msg["stream"]
                         data = msg["data"]
-                        if stream_name.endswith("@aggTrade"):
-                            event = self._parse_trade(data)
-                            await self._emit("raw:trade:binance_futures:btcusdt", event)
-                        elif "@markPrice" in stream_name:
+                        self._last_market_event_ms = self.now_ms()
+                        if "@markPrice" in stream_name:
                             event = self._parse_mark_index(data)
-                            await self._emit("raw:mark_index:binance_futures:btcusdt", event)
+                            await self.emit(Channels.mark_index(BINANCE_FUTURES), event)
                         elif "forceOrder" in stream_name:
                             event = self._parse_liquidation(data)
                             if event is not None:
-                                await self._emit("raw:liquidation:binance_futures:btcusdt", event)
+                                await self.emit(Channels.liquidation(BINANCE_FUTURES), event)
             except Exception:
                 attempt += 1
                 logger.warning("Futures market ws disconnected, reconnect attempt %d", attempt, exc_info=True)
                 await self.sleep_backoff(attempt)
+
+    async def _watch_feeds(self) -> None:
+        while True:
+            now_ms = self.now_ms()
+            public_age = self._feed_age_ms(self._last_public_event_ms, now_ms)
+            trades_age = self._feed_age_ms(self._last_trades_event_ms, now_ms)
+            market_age = self._feed_age_ms(self._last_market_event_ms, now_ms)
+
+            public_stale = public_age is not None and public_age > PUBLIC_FEED_STALE_MS
+            trades_stale = trades_age is not None and trades_age > MARKET_FEED_STALE_MS
+            market_stale = market_age is not None and market_age > MARKET_FEED_STALE_MS
+
+            for name, is_stale, was_stale, age in [
+                ("public", public_stale, self._public_feed_stale, public_age),
+                ("trades", trades_stale, self._trades_feed_stale, trades_age),
+                ("market", market_stale, self._market_feed_stale, market_age),
+            ]:
+                if is_stale and not was_stale:
+                    logger.warning("Futures %s feed stale: no events for %dms", name, age)
+                elif not is_stale and was_stale:
+                    logger.info("Futures %s feed recovered", name)
+
+            self._public_feed_stale = public_stale
+            self._trades_feed_stale = trades_stale
+            self._market_feed_stale = market_stale
+            await self._publish_collector_state(now_ms)
+            await asyncio.sleep(1.0)
 
     def _parse_trade(self, data: dict[str, Any]) -> TradeEvent:
         aggressive_side = "sell" if data["m"] else "buy"
@@ -204,9 +273,8 @@ class BinanceFuturesCollector(BaseCollector):
 
         if applied:
             derived_bbo = self._build_bbo_from_book(event)
-            if derived_bbo:
-                await self._emit("raw:bbo:binance_futures:btcusdt", derived_bbo)
-            await self._publish_book_state()
+            if derived_bbo and self._futures_bbo_changed(derived_bbo):
+                await self.emit(Channels.bbo(BINANCE_FUTURES), derived_bbo)
         else:
             # Lost continuity — resync
             logger.warning("Futures local book lost continuity at update %s, resyncing", event.final_update_id)
@@ -264,7 +332,7 @@ class BinanceFuturesCollector(BaseCollector):
                 logger.info("Futures local book synced at update %s", self.book.last_update_id)
                 derived_bbo = self._build_bbo_from_book_direct()
                 if derived_bbo:
-                    await self._emit("raw:bbo:binance_futures:btcusdt", derived_bbo)
+                    await self.emit(Channels.bbo(BINANCE_FUTURES), derived_bbo)
                 await self._publish_book_state()
                 return
 
@@ -369,6 +437,48 @@ class BinanceFuturesCollector(BaseCollector):
             ts_local=self.now_ms(),
         )
 
+    def _futures_bbo_changed(self, bbo: BBOEvent) -> bool:
+        key = (bbo.bid_px, bbo.ask_px)
+        if key == self._last_futures_bbo_key:
+            return False
+        self._last_futures_bbo_key = key
+        return True
+
+    def _public_stream_url(self) -> str:
+        stream = f"{self.symbol}@bookTicker/{self.symbol}@depth@100ms"
+        return f"{self.settings.binance_futures_public_ws}/stream?streams={stream}"
+
+    def _trades_stream_url(self) -> str:
+        stream = f"{self.symbol}@aggTrade"
+        return f"{self.settings.binance_futures_market_ws}/stream?streams={stream}"
+
+    def _market_stream_url(self) -> str:
+        stream = f"{self.symbol}@markPrice@1s/!forceOrder@arr"
+        return f"{self.settings.binance_futures_market_ws}/stream?streams={stream}"
+
+    @staticmethod
+    def _feed_age_ms(last_event_ms: int | None, now_ms: int) -> int | None:
+        if last_event_ms is None:
+            return None
+        return max(0, now_ms - last_event_ms)
+
+    def _collector_state_payload(self, now_ms: int | None = None) -> dict[str, Any]:
+        if now_ms is None:
+            now_ms = self.now_ms()
+        public_age = self._feed_age_ms(self._last_public_event_ms, now_ms)
+        trades_age = self._feed_age_ms(self._last_trades_event_ms, now_ms)
+        market_age = self._feed_age_ms(self._last_market_event_ms, now_ms)
+        return {
+            "venue": BINANCE_FUTURES,
+            "symbol": self.symbol.upper(),
+            "public_feed_age_ms": public_age,
+            "trades_feed_age_ms": trades_age,
+            "market_feed_age_ms": market_age,
+            "public_feed_stale": self._public_feed_stale,
+            "trades_feed_stale": self._trades_feed_stale,
+            "market_feed_stale": self._market_feed_stale,
+        }
+
     def _set_book_sync_state(self, status: str, reason: str) -> None:
         self._book_sync_status = status
         self._book_sync_reason = reason
@@ -388,14 +498,10 @@ class BinanceFuturesCollector(BaseCollector):
             "best_ask_px": best_ask[0] if best_ask else None,
             "mid_px": self.book.mid(),
         }
-        await self.bus.set_json("state:book:binance_futures:btcusdt", payload)
+        await self.bus.set_json(Keys.book(BINANCE_FUTURES), payload)
 
-    async def _emit(self, channel: str, model) -> None:
-        payload = model.model_dump()
-        await self.bus.publish_json(channel, payload)
-        key = f"state:latest:{channel.removeprefix('raw:')}"
-        await self.bus.set_json(key, payload)
-
+    async def _publish_collector_state(self, now_ms: int | None = None) -> None:
+        await self.bus.set_json(Keys.collector(BINANCE_FUTURES), self._collector_state_payload(now_ms))
 
 async def main() -> None:
     from app.bus import RedisBus

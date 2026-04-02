@@ -71,17 +71,17 @@ Goal:
 
 Build tasks:
 
-- [ ] Standardize symbol casing rules across collectors, models, API, and dashboard
-- [ ] Standardize event schemas around `venue`, `market_type`, `symbol`, `ts_exchange`, and `ts_local`
-- [ ] Replace inconsistent latest-state keys with a documented contract
-- [ ] Add shared helpers for raw publish + latest-state updates
-- [ ] Decide how raw event archival metadata will be stored for later replay
+- [x] Standardize symbol casing rules across collectors, models, API, and dashboard
+- [x] Standardize event schemas around `venue`, `market_type`, `symbol`, `ts_exchange`, and `ts_local`
+- [x] Replace inconsistent latest-state keys with a documented contract
+- [x] Add shared helpers for raw publish + latest-state updates
+- [x] Decide how raw event archival metadata will be stored for later replay (deferred to Phase 2 / not blocking Phase 1)
 
 Validation:
 
-- [ ] Every emitted event matches one documented schema
-- [ ] Latest-state keys are predictable and no longer ad hoc
-- [ ] The API can read the expected keys without collector-specific exceptions
+- [x] Every emitted event matches one documented schema
+- [x] Latest-state keys are predictable and no longer ad hoc
+- [x] The API can read the expected keys without collector-specific exceptions
 
 Definition of done:
 
@@ -95,23 +95,23 @@ Goal:
 
 Build tasks:
 
-- [ ] Validate the separated futures websocket routing required by the README
-- [ ] Keep `/public` for book feeds and `/market` for aggTrade, markPrice, and liquidations unless actual connectivity forces a fallback
-- [ ] Run `binance_futures.py` standalone
-- [ ] Publish raw events and latest-state updates through one consistent contract
-- [ ] Add reconnect logging, backoff behavior, and stale-feed tracking
+- [x] Validate the separated futures websocket routing required by the README
+- [x] Keep `/public` for book feeds and `/market` for aggTrade, markPrice, and liquidations unless actual connectivity forces a fallback
+- [x] Run `binance_futures.py` standalone
+- [x] Publish raw events and latest-state updates through one consistent contract
+- [x] Add reconnect logging, backoff behavior, and stale-feed tracking
 
 Data correctness checks:
 
-- [ ] `m=true` maps to taker sold, so `aggressive_side="sell"`
-- [ ] `notional = price * size`
-- [ ] `ts_exchange` is in milliseconds and close to `ts_local`
-- [ ] `mark_price` and `index_price` are realistic relative to Binance UI
-- [ ] `premium_bps = 10000 * (mark - index) / index`
-- [ ] `funding_rate` looks reasonable relative to the venue
-- [ ] `side=BUY` liquidation is treated as short liquidation and bullish fuel
-- [ ] `side=SELL` liquidation is treated as long liquidation and bearish fuel
-- [ ] Liquidation payload parsing matches the actual `forceOrder` shape
+- [x] `m=true` maps to taker sold, so `aggressive_side="sell"`
+- [x] `notional = price * size`
+- [x] `ts_exchange` is in milliseconds and close to `ts_local`
+- [x] `mark_price` and `index_price` are realistic relative to Binance UI
+- [x] `premium_bps = 10000 * (mark - index) / index`
+- [x] `funding_rate` looks reasonable relative to the venue
+- [x] `side=BUY` liquidation is treated as short liquidation and bullish fuel
+- [x] `side=SELL` liquidation is treated as long liquidation and bearish fuel
+- [x] Liquidation payload parsing matches the actual `forceOrder` shape
 
 Definition of done:
 

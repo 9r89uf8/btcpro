@@ -42,6 +42,10 @@ async def run_services() -> None:
     oi_poller = BinanceOpenInterestPoller(bus)
     feature_engine = FeatureEngine(bus)
 
+    # Wire in-process trade queue — bypasses Redis for high-frequency trades
+    futures_collector._trade_queue = feature_engine.trade_queue
+    spot_collector._trade_queue = feature_engine.trade_queue
+
     logger.info("Starting collectors + feature engine...")
 
     tasks = [

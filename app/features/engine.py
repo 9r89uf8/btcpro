@@ -4,9 +4,11 @@ import asyncio
 import json
 import time
 from collections import deque
+from typing import Any
 
 from app.bus import RedisBus
 from app.config import get_settings
+from app.contract import BINANCE_FUTURES, BINANCE_SPOT, Channels, Keys
 from app.features.rolling import RollingSeries, RollingSignedWindow
 from app.features.scoring import ScoreInputs, build_score_snapshot, score_linear
 from app.models import FeatureBar
@@ -14,14 +16,16 @@ from app.models import FeatureBar
 
 class FeatureEngine:
     """
-    Minimal starter feature engine.
-    In production, move from pub/sub to a durable event log or Redis streams.
+    Receives trades via in-process queue (no Redis round-trip),
+    other events via Redis pub/sub.
     """
 
     def __init__(self, bus: RedisBus) -> None:
         self.bus = bus
         self.settings = get_settings()
         self.symbol = self.settings.symbol.upper()
+        # In-process trade queues — collectors push directly, no Redis
+        self.trade_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         self.perp_cvd_1s = RollingSignedWindow(1000)
         self.perp_cvd_5s = RollingSignedWindow(5000)
@@ -61,17 +65,39 @@ class FeatureEngine:
     async def run(self) -> None:
         pubsub = self.bus.client.pubsub()
         await pubsub.subscribe(
-            "raw:trade:binance_futures:btcusdt",
-            "raw:trade:binance_spot:btcusdt",
-            "raw:bbo:binance_futures:btcusdt",
-            "raw:bbo:binance_spot:btcusdt",
-            "raw:mark_index:binance_futures:btcusdt",
-            "raw:open_interest:binance_futures:btcusdt",
-            "raw:liquidation:binance_futures:btcusdt",
+            Channels.bbo(BINANCE_FUTURES),
+            Channels.bbo(BINANCE_SPOT),
+            Channels.mark_index(BINANCE_FUTURES),
+            Channels.open_interest(BINANCE_FUTURES),
+            Channels.liquidation(BINANCE_FUTURES),
         )
-        await asyncio.gather(self._consume(pubsub), self._tick())
+        await asyncio.gather(
+            self._consume_trades(),
+            self._consume_redis(pubsub),
+            self._tick(),
+        )
 
-    async def _consume(self, pubsub) -> None:
+    async def _consume_trades(self) -> None:
+        """Read trades from in-process queue (zero latency, no Redis)."""
+        while True:
+            payload = await self.trade_queue.get()
+            now_ms = int(time.time() * 1000)
+            ts_exchange = int(payload.get("ts_exchange", now_ms))
+            self.feed_lags.append(max(0.0, now_ms - ts_exchange))
+
+            venue = payload.get("venue")
+            signed = payload["notional"] if payload["aggressive_side"] == "buy" else -payload["notional"]
+            if venue == BINANCE_FUTURES:
+                self.perp_cvd_1s.add(now_ms, signed)
+                self.perp_cvd_5s.add(now_ms, signed)
+                self.perp_cvd_15s.add(now_ms, signed)
+            elif venue == BINANCE_SPOT:
+                self.spot_cvd_1s.add(now_ms, signed)
+                self.spot_cvd_5s.add(now_ms, signed)
+                self.spot_cvd_15s.add(now_ms, signed)
+
+    async def _consume_redis(self, pubsub) -> None:
+        """Read low-frequency events from Redis pub/sub."""
         async for message in pubsub.listen():
             if message["type"] != "message":
                 continue
@@ -81,26 +107,16 @@ class FeatureEngine:
             ts_exchange = int(payload.get("ts_exchange", now_ms))
             self.feed_lags.append(max(0.0, now_ms - ts_exchange))
 
-            if channel == "raw:trade:binance_futures:btcusdt":
-                signed = payload["notional"] if payload["aggressive_side"] == "buy" else -payload["notional"]
-                self.perp_cvd_1s.add(now_ms, signed)
-                self.perp_cvd_5s.add(now_ms, signed)
-                self.perp_cvd_15s.add(now_ms, signed)
-            elif channel == "raw:trade:binance_spot:btcusdt":
-                signed = payload["notional"] if payload["aggressive_side"] == "buy" else -payload["notional"]
-                self.spot_cvd_1s.add(now_ms, signed)
-                self.spot_cvd_5s.add(now_ms, signed)
-                self.spot_cvd_15s.add(now_ms, signed)
-            elif channel == "raw:bbo:binance_futures:btcusdt":
+            if channel == Channels.bbo(BINANCE_FUTURES):
                 self.latest_futures_bbo = payload
-            elif channel == "raw:bbo:binance_spot:btcusdt":
+            elif channel == Channels.bbo(BINANCE_SPOT):
                 self.latest_spot_bbo = payload
-            elif channel == "raw:mark_index:binance_futures:btcusdt":
+            elif channel == Channels.mark_index(BINANCE_FUTURES):
                 self.latest_mark_index = payload
                 self.premium_history.append((now_ms, payload["premium_bps"]))
-            elif channel == "raw:open_interest:binance_futures:btcusdt":
+            elif channel == Channels.open_interest(BINANCE_FUTURES):
                 self.oi_history.append((now_ms, payload["open_interest"]))
-            elif channel == "raw:liquidation:binance_futures:btcusdt":
+            elif channel == Channels.liquidation(BINANCE_FUTURES):
                 signed = payload["notional"] if payload["side"] == "BUY" else -payload["notional"]
                 self.liq_skew_30s.add(now_ms, signed)
 
@@ -214,10 +230,10 @@ class FeatureEngine:
             feature_payload = feature_bar.model_dump()
             score_payload = snapshot.model_dump()
 
-            await self.bus.set_json("state:latest:feature_bar:btcusdt", feature_payload)
-            await self.bus.set_json("state:latest:score:btcusdt", score_payload)
-            await self.bus.publish_json("derived:feature_bar:btcusdt", feature_payload)
-            await self.bus.publish_json("derived:score:btcusdt", score_payload)
+            await self.bus.set_json(Keys.feature_bar(), feature_payload)
+            await self.bus.set_json(Keys.score(), score_payload)
+            await self.bus.publish_json(Channels.feature_bar(), feature_payload)
+            await self.bus.publish_json(Channels.score(), score_payload)
 
             await asyncio.sleep(1.0)
 

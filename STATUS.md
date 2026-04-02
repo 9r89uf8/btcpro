@@ -10,7 +10,7 @@
 - Redis connectivity verified
 
 ### Collectors (app/collectors/)
-- **Binance Futures** — websocket collector on separated routing (`/public` for book feeds, `/market` for aggTrade/markPrice/liquidations). Trades, mark/index, and liquidations still publish to Redis. High-frequency `bookTicker` and raw depth deltas no longer publish to remote Redis; depth is buffered locally for local-book sync, and futures BBO is derived from the synchronized local book.
+- **Binance Futures** — collector now split across three live paths: `/public` for book feeds, `/market` `aggTrade` on its own loop, and `/market` markPrice/liquidations on a separate low-volume loop. Futures trades publish to Redis pub/sub for CVD, use throttled latest-state writes for API inspection, and no longer block mark/index or liquidation freshness. High-frequency `bookTicker` and raw depth deltas do not publish to remote Redis; depth is buffered locally for local-book sync, and futures BBO is derived from the synchronized local book.
 - **Binance Spot** — collector split into separate trade and depth websocket loops. Trades still publish to Redis for spot CVD. Spot depth stays local, synchronizes a local spot book via REST snapshot + live deltas, and spot BBO is derived from the synchronized local book with bid/ask-price dedupe before publishing.
 - **Binance OI Poller** — REST poller hitting `/fapi/v1/openInterest` every 1 second.
 - **Bybit** — optional confirmation collector for trades and liquidations (starter-level, passthrough for ticker/orderbook).
@@ -18,6 +18,7 @@
 
 ### Data Layer
 - **RedisBus** (`app/bus.py`) — async Redis wrapper for pub/sub + latest-state key/value.
+- **Contract Layer** (`app/contract.py`) — centralized venue constants plus shared Redis channel/key builders for raw events, derived events, latest-state keys, and book-state keys. This is now the source of truth for symbol casing and Redis naming conventions.
 - **Models** (`app/models.py`) — Pydantic schemas for TradeEvent, BBOEvent, BookDeltaEvent, MarkIndexEvent, LiquidationEvent, OpenInterestEvent, FeatureBar, ScoreSnapshot.
 - **LocalBook** (`app/books/`) — shared order book helper for Binance futures and spot, with snapshot bootstrap, delta application, desync detection, and snapshot bridging rules for both the futures `pu` path and the spot `U/u` path. Exposes top-of-book, mid, depth within bps, and imbalance.
 
@@ -37,12 +38,12 @@
 
 ### API (app/api/main.py)
 - FastAPI on port 8000.
-- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/bbo/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`.
+- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/trade/futures`, `/latest/mark-index/futures`, `/latest/liquidation/futures`, `/latest/collector/futures`, `/latest/bbo/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`.
 - `/history/features` is a placeholder (not implemented).
 
 ### Dashboard (dashboard/app.py)
 - Dash app on port 8050 with dark theme.
-- Live charts: price (perp local-book BBO vs spot local-book BBO or trade fallback), premium bps, perp CVD 5s.
+- Live charts: price (perp local-book BBO vs spot local-book BBO or trade fallback), live basis vs exchange premium, perp vs spot CVD 5s, OI delta 30s, liquidation skew 30s.
 - Status block: top-line price/state/score metrics plus separate futures and spot book-sync/source rows.
 - Polls `/latest/all` every 5 seconds.
 
@@ -54,14 +55,15 @@
 - `test_bullish_score_positive` — verifies bullish z-score inputs produce positive score.
 - `test_bearish_score_negative` — verifies bearish z-score inputs produce negative score.
 - `test_binance_local_book.py` — covers snapshot bootstrap, spot bridge acceptance via `lastUpdateId + 1`, futures `pu` bridge handling, and continuity mismatch behavior.
+- `test_binance_futures_collector.py` — covers separated routing, trade normalization, mark/index parsing, liquidation payload parsing, and futures feed-age/staleness state.
 
 ---
 
 ## Current Phase
 
-**Section 0 (Bootstrap) is complete.**
+**Sections 0 (Bootstrap), 1 (Normalize Contracts), and 2 (Binance Futures Collector) are complete.**
 
-Sections 1–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
+Sections 3–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
 
 ---
 
@@ -70,8 +72,8 @@ Sections 1–11 from the master plan have not been formally worked through yet. 
 | Section | Name | Status | Summary |
 |---------|------|--------|---------|
 | 0 | Bootstrap | **Done** | Scaffold extracted, deps installed, Redis connected, launcher working |
-| 1 | Normalize Contracts | Not started | Standardize symbol casing, event schemas, Redis key naming, shared emit helpers |
-| 2 | Binance Futures Collector | Not started | Validate trade side logic, notional calc, mark/index parsing, liquidation shape |
+| 1 | Normalize Contracts | **Done** | Central contract layer added, symbol casing rules standardized, API/collectors/features use shared channel and key builders |
+| 2 | Binance Futures Collector | **Done** | Separated `/public` and `/market` routing validated, futures trade/mark/liquidation normalization checked, feed-age diagnostics added |
 | 3 | Futures Local Order Book | Not started | Wire LocalBook into live path, snapshot bootstrap, delta continuity, resync, book health |
 | 4 | Binance Spot Collector | Not started | Validate spot trade normalization, BBO parsing, depth handling |
 | 5 | Open Interest Poller | Not started | Validate OI units (BTC not USD), polling rate, error surfacing |
@@ -100,6 +102,11 @@ Sections 1–11 from the master plan have not been formally worked through yet. 
 ### Remote Redis Latency
 - **Do not publish high-frequency data to the remote Redis Cloud instance.** Each Redis call is ~50ms round-trip. Publishing every bookTicker or depth delta (10–50 messages/sec) throttles the websocket loop to <1 msg/sec, breaking local book sync and causing stale data. Only publish derived/aggregated state (BBO from synced book, trades, features, scores). Raw depth deltas are consumed locally only.
 
+### Futures Market Path — Resolved
+- The futures `/market` stream originally suffered the same remote Redis throttling issue as the public book path. `aggTrade` volume caused the loop to fall behind, which made `ts_exchange` for trades, mark/index, and liquidations look minutes stale.
+- Fix: split futures trades onto their own websocket loop, keep markPrice and liquidations on a separate low-volume loop, and throttle latest-state trade writes while still publishing trade events for the feature engine.
+- Operational result: futures trade and mark/index timestamps are now close to local time, `/latest/trade/futures` remains available for inspection, and `/latest/collector/futures` exposes public/trade/market feed ages.
+
 ### Local Book — Partially Wired
 - `LocalBook` is now connected to both the futures and spot live depth streams, exposes sync telemetry through `/latest/book/futures` and `/latest/book/spot`, and is the source of BBO for both venues when synchronized. However, the feature engine still uses placeholder values for `depth_imbalance`, `near_touch_depth`, and `depth_pull`. Wiring those is Section 6 work.
 
@@ -117,8 +124,8 @@ Sections 1–11 from the master plan have not been formally worked through yet. 
 ### No Raw Event Archival
 - Raw events are published to Redis pub/sub but not persisted. Replay and backtesting require an archive layer (ClickHouse, Parquet, or Redis Streams). Phase 2 work.
 
-### Redis Key Consistency
-- The latest-state key naming was fixed during bootstrap (`state:latest:` prefix without `raw:`), but the full Redis contract from the README has not been audited end-to-end. Section 1 work.
+### Raw Event Archival Metadata
+- The live Redis contract is now centralized in `app/contract.py`, but archival/replay metadata is still deferred. Raw events are not yet stored in a durable replay format. That remains Phase 2 work.
 
 ### OI Poller Error Handling
 - Now logs warnings on failure instead of silently passing, but does not track consecutive failures or surface them to the health endpoint. Section 5 work.

@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 import websockets
 
 from app.collectors.base import BaseCollector
 from app.config import get_settings
+from app.contract import BYBIT, Channels
 from app.models import LiquidationEvent, TradeEvent
+
+logger = logging.getLogger(__name__)
 
 
 class BybitCollector(BaseCollector):
     """
     Optional confirmation collector.
-    This starter keeps only trade + liquidation normalization.
-    Extend with ticker/orderbook after Binance is stable.
+    Normalizes trades and liquidations only.
+    Ticker/orderbook topics are subscribed but not yet processed —
+    extend after Binance path is stable (Section 11).
     """
 
     def __init__(self, bus):
@@ -46,16 +51,15 @@ class BybitCollector(BaseCollector):
                         if topic.startswith("publicTrade."):
                             for trade in msg.get("data", []):
                                 event = self._parse_trade(trade)
-                                await self._emit("raw:trade:bybit:btcusdt", event)
+                                await self.emit(Channels.trade(BYBIT), event)
                         elif topic.startswith("allLiquidation."):
                             for liq in msg.get("data", []):
                                 event = self._parse_liquidation(liq)
-                                await self._emit("raw:liquidation:bybit:btcusdt", event)
-                        else:
-                            # Keep raw ticker/orderbook messages for later feature additions.
-                            await self.bus.publish_json(f"raw:passthrough:bybit:btcusdt", msg)
+                                await self.emit(Channels.liquidation(BYBIT), event)
+                        # tickers and orderbook intentionally ignored until Section 11
             except Exception:
                 attempt += 1
+                logger.warning("Bybit ws disconnected, reconnect attempt %d", attempt, exc_info=True)
                 await self.sleep_backoff(attempt)
 
     def _parse_trade(self, trade: dict[str, Any]) -> TradeEvent:
@@ -87,12 +91,6 @@ class BybitCollector(BaseCollector):
             ts_exchange=int(liq["T"]),
             ts_local=self.now_ms(),
         )
-
-    async def _emit(self, channel: str, model) -> None:
-        payload = model.model_dump()
-        await self.bus.publish_json(channel, payload)
-        key = f"state:latest:{channel.removeprefix('raw:')}"
-        await self.bus.set_json(key, payload)
 
 
 async def main() -> None:

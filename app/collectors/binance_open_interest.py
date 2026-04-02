@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import httpx
 
 from app.collectors.base import BaseCollector
 from app.config import get_settings
+from app.contract import BINANCE_FUTURES, Channels
 from app.models import OpenInterestEvent
 
 logger = logging.getLogger(__name__)
@@ -34,9 +34,7 @@ class BinanceOpenInterestPoller(BaseCollector):
                         ts_exchange=int(data["time"]),
                         ts_local=self.now_ms(),
                     )
-                    payload = event.model_dump()
-                    await self.bus.publish_json("raw:open_interest:binance_futures:btcusdt", payload)
-                    await self.bus.set_json("state:latest:open_interest:binance_futures:btcusdt", payload)
+                    await self.emit(Channels.open_interest(BINANCE_FUTURES), event)
                 except Exception:
                     logger.warning("OI poll failed", exc_info=True)
                 await asyncio.sleep(1.0)

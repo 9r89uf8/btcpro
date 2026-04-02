@@ -15,6 +15,7 @@ timestamps: deque[str] = deque(maxlen=MAX_POINTS)
 perp_mids: deque[float] = deque(maxlen=MAX_POINTS)
 spot_mids: deque[float] = deque(maxlen=MAX_POINTS)
 premiums: deque[float] = deque(maxlen=MAX_POINTS)
+live_basis_vals: deque[float] = deque(maxlen=MAX_POINTS)
 perp_cvd_vals: deque[float] = deque(maxlen=MAX_POINTS)
 spot_cvd_vals: deque[float] = deque(maxlen=MAX_POINTS)
 oi_delta_vals: deque[float] = deque(maxlen=MAX_POINTS)
@@ -67,6 +68,8 @@ def refresh(_):
     perp_mids.append(perp_mid)
     spot_mids.append(spot_mid)
     premiums.append(features.get("premium_bps", 0))
+    live_basis = 10000.0 * (perp_mid - spot_mid) / spot_mid if spot_mid else 0.0
+    live_basis_vals.append(live_basis)
     perp_cvd_vals.append(features.get("perp_cvd_5s", 0))
     spot_cvd_vals.append(features.get("spot_cvd_5s", 0))
     oi_delta_vals.append(features.get("oi_delta_30s", 0))
@@ -79,7 +82,7 @@ def refresh(_):
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.07,
-        subplot_titles=("Price (Perp vs Spot)", "Premium bps", "Perp vs Spot CVD 5s", "OI Delta 30s + Liq Skew 30s"),
+        subplot_titles=("Price (Perp vs Spot)", "Live Basis vs Exchange Premium (bps)", "Perp vs Spot CVD 5s", "OI Delta 30s + Liq Skew 30s"),
         row_heights=[0.42, 0.18, 0.2, 0.2],
         specs=[[{}], [{}], [{}], [{"secondary_y": True}]],
     )
@@ -90,8 +93,28 @@ def refresh(_):
         fig.add_trace(go.Scattergl(x=ts, y=list(spot_mids), name="Spot",
                                     mode="lines", line=dict(color="#ff6b6b", width=1.5, dash="dot")), row=1, col=1)
 
-    fig.add_trace(go.Scattergl(x=ts, y=list(premiums), name="Premium",
-                                mode="lines", line=dict(color="#ffd93d", width=1.5)), row=2, col=1)
+    fig.add_trace(
+        go.Scattergl(
+            x=ts,
+            y=list(live_basis_vals),
+            name="Live Basis",
+            mode="lines",
+            line=dict(color="#ff9f1c", width=1.8),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scattergl(
+            x=ts,
+            y=list(premiums),
+            name="Exchange Premium",
+            mode="lines",
+            line=dict(color="#ffd93d", width=1.5, dash="dot"),
+        ),
+        row=2,
+        col=1,
+    )
 
     perp_cvd_list = list(perp_cvd_vals)
     spot_cvd_list = list(spot_cvd_vals)

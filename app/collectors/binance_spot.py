@@ -11,6 +11,7 @@ import websockets
 from app.books.binance_local_book import LocalBook, fetch_binance_spot_snapshot
 from app.collectors.base import BaseCollector
 from app.config import get_settings
+from app.contract import BINANCE_SPOT, Channels, Keys
 from app.models import BBOEvent, BookDeltaEvent, TradeEvent
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class BinanceSpotCollector(BaseCollector):
         self._book_sync_reason = "startup"
         self._book_last_sync_ms: int | None = None
         self._last_spot_bbo_key: tuple[float, float] | None = None
+        self._trade_queue: asyncio.Queue | None = None
 
     async def run(self) -> None:
         await asyncio.gather(
@@ -47,7 +49,9 @@ class BinanceSpotCollector(BaseCollector):
                         msg = json.loads(raw)
                         data = msg["data"]
                         event = self._parse_trade(data)
-                        await self._emit("raw:trade:binance_spot:btcusdt", event)
+                        # Push to in-process queue for feature engine (zero latency)
+                        if self._trade_queue is not None:
+                            self._trade_queue.put_nowait(event.model_dump())
             except Exception:
                 attempt += 1
                 logger.warning("Spot trades ws disconnected, reconnect attempt %d", attempt, exc_info=True)
@@ -120,8 +124,7 @@ class BinanceSpotCollector(BaseCollector):
         if applied:
             derived_bbo = self._build_bbo_from_book(event)
             if derived_bbo and self._spot_bbo_changed(derived_bbo):
-                await self._emit("raw:bbo:binance_spot:btcusdt", derived_bbo)
-            await self._publish_book_state()
+                await self.emit(Channels.bbo(BINANCE_SPOT), derived_bbo)
             return
 
         logger.warning("Spot local book lost continuity at update %s, resyncing", event.final_update_id)
@@ -168,7 +171,7 @@ class BinanceSpotCollector(BaseCollector):
                 logger.info("Spot local book synced at update %s", self.book.last_update_id)
                 derived_bbo = self._build_bbo_from_book_direct()
                 if derived_bbo and self._spot_bbo_changed(derived_bbo):
-                    await self._emit("raw:bbo:binance_spot:btcusdt", derived_bbo)
+                    await self.emit(Channels.bbo(BINANCE_SPOT), derived_bbo)
                 await self._publish_book_state()
                 return
 
@@ -285,14 +288,7 @@ class BinanceSpotCollector(BaseCollector):
             "best_ask_sz": best_ask[1] if best_ask else None,
             "mid_px": self.book.mid(),
         }
-        await self.bus.set_json("state:book:binance_spot:btcusdt", payload)
-
-    async def _emit(self, channel: str, model) -> None:
-        payload = model.model_dump()
-        await self.bus.publish_json(channel, payload)
-        key = f"state:latest:{channel.removeprefix('raw:')}"
-        await self.bus.set_json(key, payload)
-
+        await self.bus.set_json(Keys.book(BINANCE_SPOT), payload)
 
 async def main() -> None:
     from app.bus import RedisBus
