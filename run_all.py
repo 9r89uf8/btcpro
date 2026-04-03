@@ -51,7 +51,12 @@ async def run_services() -> None:
     from app.api.main import app as api_app
     api_app.state.feature_engine = feature_engine
 
-    logger.info("Starting collectors + feature engine...")
+    logger.info("Starting services...")
+    logger.info("  Futures collector: 3 websocket loops (depth, trades, market)")
+    logger.info("  Spot collector:    2 websocket loops (trades, depth)")
+    logger.info("  OI poller:         REST poll every 1s")
+    logger.info("  Feature engine:    1s feature bars + scoring")
+    logger.info("  In-process wiring: trade queue + book reference")
 
     tasks = [
         asyncio.create_task(futures_collector.run(), name="binance_futures"),

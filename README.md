@@ -550,3 +550,35 @@ A likely trap looks like:
 - near-touch bid depth disappears.
 
 That interpretation is exactly why the report prioritized perp aggression, premium, liquidity, leverage, and liquidations.
+
+## Quick Start
+
+### Prerequisites
+- Python 3.11+
+- A Redis instance (local or remote). Set `REDIS_URL` in `.env`.
+
+### Setup
+```bash
+cp .env.example .env
+# Edit .env — set REDIS_URL to your Redis instance
+pip install -e .
+```
+
+### Run
+```bash
+python run_all.py
+```
+
+This single command starts:
+- Binance futures collector (3 websocket loops: depth, trades, market)
+- Binance spot collector (2 websocket loops: trades, depth)
+- Open interest poller (REST, 1s cadence)
+- Feature engine (1s feature bars)
+- FastAPI server on http://localhost:8000
+- Dashboard on http://localhost:8050
+
+### Verify
+- Dashboard: http://localhost:8050
+- API health: http://localhost:8000/health
+- Latest features: http://localhost:8000/latest/features
+- Latest score: http://localhost:8000/latest/score

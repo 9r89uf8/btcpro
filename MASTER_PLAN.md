@@ -356,12 +356,12 @@ Goal:
 
 Build tasks:
 
-- [ ] Create a top-level launcher such as `run_all.py` or equivalent
-- [ ] Start collectors, OI poller, feature engine, API, and dashboard with a clear startup order
-- [ ] Decide whether the dashboard runs inside the launcher or as a separate optional process
-- [ ] Add graceful shutdown handling
-- [ ] Surface stale-feed alerts visibly
-- [ ] Document the single “start the system” command path
+- [x] Create a top-level launcher such as `run_all.py` or equivalent
+- [x] Start collectors, OI poller, feature engine, API, and dashboard with a clear startup order
+- [x] Decide whether the dashboard runs inside the launcher or as a separate optional process (inside launcher)
+- [x] Add graceful shutdown handling
+- [x] Surface stale-feed alerts visibly (degraded state + dashboard warnings)
+- [x] Document the single “start the system” command path (Quick Start in README.md)
 
 Important note:
 
@@ -369,13 +369,13 @@ Important note:
 
 Validation:
 
-- [ ] Trades flow through Redis to features, scores, API, and dashboard
-- [ ] End-to-end latency is acceptable for a 1-second feature cadence
-- [ ] Feed failures become visible degraded states, not silent bad outputs
+- [x] Trades flow through in-process queue to features, scores, API, and dashboard
+- [x] End-to-end latency is acceptable for a 1-second feature cadence
+- [x] Feed failures become visible degraded states, not silent bad outputs
 
 Tests to add:
 
-- [ ] End-to-end smoke test for the core pipeline
+- [x] End-to-end smoke test for the core pipeline (2 tests: trade flow + tick produces feature bar/score)
 
 Definition of done:
 
