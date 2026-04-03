@@ -97,9 +97,9 @@ def reason_strings(feature_bar: FeatureBar) -> list[str]:
         reasons.append("book not synchronized")
     if feature_bar.oi_lag_ms_p95 > 30_000:
         reasons.append("OI feed stale")
-    if feature_bar.spot_trade_lag_ms_p95 > 2_000:
+    if max(feature_bar.spot_trade_lag_ms_p95, feature_bar.bbo_spot_lag_ms_p95) > 2_000:
         reasons.append("spot feed stale")
-    if max(feature_bar.futures_trade_lag_ms_p95, feature_bar.bbo_lag_ms_p95,
+    if max(feature_bar.futures_trade_lag_ms_p95, feature_bar.bbo_futures_lag_ms_p95,
            feature_bar.mark_index_lag_ms_p95) > 1_000:
         reasons.append("futures feed stale")
 

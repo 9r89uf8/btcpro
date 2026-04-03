@@ -67,7 +67,8 @@ class FeatureEngine:
         # Per-source lag tracking
         self._lag_futures_trade: deque[float] = deque(maxlen=200)
         self._lag_spot_trade: deque[float] = deque(maxlen=200)
-        self._lag_bbo: deque[float] = deque(maxlen=200)
+        self._lag_bbo_futures: deque[float] = deque(maxlen=200)
+        self._lag_bbo_spot: deque[float] = deque(maxlen=200)
         self._lag_mark_index: deque[float] = deque(maxlen=100)
         self._lag_oi: deque[float] = deque(maxlen=100)
 
@@ -119,10 +120,10 @@ class FeatureEngine:
             lag = max(0.0, now_ms - ts_exchange)
 
             if channel == Channels.bbo(BINANCE_FUTURES):
-                self._lag_bbo.append(lag)
+                self._lag_bbo_futures.append(lag)
                 self.latest_futures_bbo = payload
             elif channel == Channels.bbo(BINANCE_SPOT):
-                self._lag_bbo.append(lag)
+                self._lag_bbo_spot.append(lag)
                 self.latest_spot_bbo = payload
             elif channel == Channels.mark_index(BINANCE_FUTURES):
                 self._lag_mark_index.append(lag)
@@ -199,11 +200,13 @@ class FeatureEngine:
             # Per-source lag p95
             ft_lag = self._p95(self._lag_futures_trade)
             st_lag = self._p95(self._lag_spot_trade)
-            bbo_lag = self._p95(self._lag_bbo)
+            bbo_f_lag = self._p95(self._lag_bbo_futures)
+            bbo_s_lag = self._p95(self._lag_bbo_spot)
+            bbo_lag = max(bbo_f_lag, bbo_s_lag)  # combined for FeatureBar
             mi_lag = self._p95(self._lag_mark_index)
             oi_lag = self._p95(self._lag_oi)
             # Overall: max of real-time feed p95s (excludes OI — it's a REST poll)
-            rt_lags = [v for v in (ft_lag, st_lag, bbo_lag, mi_lag) if v > 0]
+            rt_lags = [v for v in (ft_lag, st_lag, bbo_f_lag, bbo_s_lag, mi_lag) if v > 0]
             feed_lag_p95 = max(rt_lags) if rt_lags else 0.0
 
             # Real depth metrics from the local book
@@ -254,7 +257,8 @@ class FeatureEngine:
                 feed_lag_ms_p95=feed_lag_p95,
                 futures_trade_lag_ms_p95=ft_lag,
                 spot_trade_lag_ms_p95=st_lag,
-                bbo_lag_ms_p95=bbo_lag,
+                bbo_futures_lag_ms_p95=bbo_f_lag,
+                bbo_spot_lag_ms_p95=bbo_s_lag,
                 mark_index_lag_ms_p95=mi_lag,
                 oi_lag_ms_p95=oi_lag,
             )
@@ -287,9 +291,9 @@ class FeatureEngine:
             # Data quality: book sync + feed freshness (README thresholds)
             oi_stale = oi_lag > 30_000
             # Spot stale: any spot feed >2s (README: "spot feed stale > 2s -> lower confidence")
-            spot_stale = st_lag > 2_000
+            spot_stale = max(st_lag, bbo_s_lag) > 2_000
             # Futures stale: any futures feed >1s (README: "futures feed stale > 1s -> degraded")
-            futures_stale = max(ft_lag, bbo_lag, mi_lag) > 1_000
+            futures_stale = max(ft_lag, bbo_f_lag, mi_lag) > 1_000
             data_quality_score = 1.0
             if not book_sync_ok:
                 data_quality_score = 0.2

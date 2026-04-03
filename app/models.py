@@ -92,7 +92,8 @@ class FeatureBar(BaseModel):
     feed_lag_ms_p95: float = 0.0
     futures_trade_lag_ms_p95: float = 0.0
     spot_trade_lag_ms_p95: float = 0.0
-    bbo_lag_ms_p95: float = 0.0
+    bbo_futures_lag_ms_p95: float = 0.0
+    bbo_spot_lag_ms_p95: float = 0.0
     mark_index_lag_ms_p95: float = 0.0
     oi_lag_ms_p95: float = 0.0
 
