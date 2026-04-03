@@ -60,9 +60,10 @@ class FeatureEngine:
         # Score history for 3m/5m rolling averages
         self._score_1m_history: deque[tuple[int, float]] = deque(maxlen=600)
 
-        # Feature bar + score history (up to 60 minutes at 1s cadence)
+        # Feature bar + score + display history (up to 60 minutes at 1s cadence)
         self.feature_history: deque[dict] = deque(maxlen=3600)
         self.score_history: deque[dict] = deque(maxlen=3600)
+        self.display_history: deque[dict] = deque(maxlen=3600)
 
         # Per-source lag tracking
         self._lag_futures_trade: deque[float] = deque(maxlen=200)
@@ -290,10 +291,15 @@ class FeatureEngine:
 
             # Data quality: book sync + feed freshness (README thresholds)
             oi_stale = oi_lag > 30_000
-            # Spot stale: any spot feed >2s (README: "spot feed stale > 2s -> lower confidence")
-            spot_stale = max(st_lag, bbo_s_lag) > 2_000
-            # Futures stale: any futures feed >1s (README: "futures feed stale > 1s -> degraded")
-            futures_stale = max(ft_lag, bbo_f_lag, mi_lag) > 1_000
+            # Spot stale: spot trade feed >2s (README: "spot feed stale > 2s -> lower confidence")
+            # Uses trade lag (in-process queue) as the true freshness signal;
+            # BBO lag includes remote Redis transport and overstates staleness.
+            spot_stale = st_lag > 2_000
+            # Futures stale: futures trade feed >2s -> degraded
+            # README says 1s, but trade lag is the only in-process metric.
+            # BBO/mark-index go through remote Redis (~50ms/call) which adds
+            # transport lag that is not actual feed staleness.
+            futures_stale = ft_lag > 2_000
             data_quality_score = 1.0
             if not book_sync_ok:
                 data_quality_score = 0.2
@@ -317,6 +323,22 @@ class FeatureEngine:
 
             self.feature_history.append(feature_payload)
             self.score_history.append(score_payload)
+
+            # Display history: prices + state for the dashboard price chart
+            perp_mid = self.latest_futures_bbo.get("mid_px", 0) if self.latest_futures_bbo else 0
+            spot_mid = self.latest_spot_bbo.get("mid_px", 0) if self.latest_spot_bbo else 0
+            if perp_mid == 0 and self.latest_mark_index:
+                perp_mid = self.latest_mark_index.get("mark_price", 0)
+            live_basis = 10000.0 * (perp_mid - spot_mid) / spot_mid if spot_mid else 0.0
+            self.display_history.append({
+                "ts": now_ms,
+                "perp_mid": perp_mid,
+                "spot_mid": spot_mid,
+                "live_basis_bps": live_basis,
+                "premium_bps": premium_bps,
+                "state": snapshot.state,
+                "score_1m": snapshot.score_1m,
+            })
 
             await self.bus.set_json(Keys.feature_bar(), feature_payload)
             await self.bus.set_json(Keys.score(), score_payload)

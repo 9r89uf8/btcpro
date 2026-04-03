@@ -160,6 +160,17 @@ async def history_features(minutes: int = Query(default=5, ge=1, le=60)) -> dict
     return {"bars": bars, "count": len(bars), "minutes": minutes}
 
 
+@app.get("/history/display")
+async def history_display(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
+    """Price/state history for the dashboard price chart."""
+    engine = app.state.feature_engine if hasattr(app.state, "feature_engine") else None
+    if engine is None:
+        return {"points": [], "message": "Feature engine not connected"}
+    cutoff_ms = int(time.time() * 1000) - minutes * 60_000
+    points = [p for p in engine.display_history if p.get("ts", 0) >= cutoff_ms]
+    return {"points": points, "count": len(points), "minutes": minutes}
+
+
 @app.get("/history/score")
 async def history_score(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
     engine = app.state.feature_engine if hasattr(app.state, "feature_engine") else None
