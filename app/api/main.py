@@ -15,26 +15,51 @@ app = FastAPI(title="BTC Microstructure Dashboard API", version="0.1.0")
 
 @app.get("/health")
 async def health() -> dict:
+    now_ms = int(time.time() * 1000)
     latest_score = await bus.get_json(Keys.score())
     latest_features = await bus.get_json(Keys.feature_bar())
     futures_book = await bus.get_json(Keys.book(BINANCE_FUTURES))
+    spot_book = await bus.get_json(Keys.book(BINANCE_SPOT))
     futures_collector = await bus.get_json(Keys.collector(BINANCE_FUTURES))
     features = latest_features or {}
+
+    # Last event age: how old is the most recent feature bar
+    bar_ts = features.get("bar_ts")
+    last_event_age_ms = (now_ms - bar_ts) if bar_ts else None
+
+    # Per-venue feed ages from collector state
+    fc = futures_collector or {}
+    futures_feed_age_ms = max(
+        fc.get("public_feed_age_ms") or 0,
+        fc.get("trades_feed_age_ms") or 0,
+        fc.get("market_feed_age_ms") or 0,
+    ) if futures_collector else None
+
+    # Spot feed age: worst of spot trade lag and spot BBO lag
+    spot_trade_lag = features.get("spot_trade_lag_ms_p95") or 0
+    spot_bbo_lag = features.get("bbo_spot_lag_ms_p95") or 0
+    spot_feed_age_ms = max(spot_trade_lag, spot_bbo_lag) if (spot_trade_lag or spot_bbo_lag) else None
+
     return {
         "status": "ok",
         "score_available": latest_score is not None,
         "features_available": latest_features is not None,
         "book_sync_ok": bool(futures_book.get("synced")) if futures_book else False,
-        "futures_trade_lag_ms": features.get("futures_trade_lag_ms_p95", None),
-        "spot_trade_lag_ms": features.get("spot_trade_lag_ms_p95", None),
-        "bbo_futures_lag_ms": features.get("bbo_futures_lag_ms_p95", None),
-        "bbo_spot_lag_ms": features.get("bbo_spot_lag_ms_p95", None),
-        "mark_index_lag_ms": features.get("mark_index_lag_ms_p95", None),
-        "oi_lag_ms": features.get("oi_lag_ms_p95", None),
-        "oi_stale": features.get("oi_lag_ms_p95", 0) > 30_000,
-        "futures_feeds_stale": bool(futures_collector.get("public_feed_stale") or
-                                    futures_collector.get("trades_feed_stale") or
-                                    futures_collector.get("market_feed_stale")) if futures_collector else None,
+        "spot_book_sync_ok": bool(spot_book.get("synced")) if spot_book else False,
+        "last_event_age_ms": last_event_age_ms,
+        "futures_feed_age_ms": futures_feed_age_ms,
+        "spot_feed_age_ms": spot_feed_age_ms,
+        "futures_trade_lag_ms": features.get("futures_trade_lag_ms_p95"),
+        "spot_trade_lag_ms": features.get("spot_trade_lag_ms_p95"),
+        "bbo_futures_lag_ms": features.get("bbo_futures_lag_ms_p95"),
+        "bbo_spot_lag_ms": features.get("bbo_spot_lag_ms_p95"),
+        "mark_index_lag_ms": features.get("mark_index_lag_ms_p95"),
+        "oi_lag_ms": features.get("oi_lag_ms_p95"),
+        "oi_stale": (features.get("oi_lag_ms_p95") or 0) > 30_000,
+        "futures_feeds_stale": bool(fc.get("public_feed_stale") or
+                                    fc.get("trades_feed_stale") or
+                                    fc.get("market_feed_stale")) if futures_collector else None,
+        "spot_feeds_stale": (spot_feed_age_ms is not None and spot_feed_age_ms > 2_000),
     }
 
 
@@ -145,6 +170,11 @@ async def history_score(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
     return {"scores": scores, "count": len(scores), "minutes": minutes}
 
 
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def _lifespan(app):
+    yield
     await bus.close()
+
+app.router.lifespan_context = _lifespan

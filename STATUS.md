@@ -10,65 +10,65 @@
 - Redis connectivity verified
 
 ### Collectors (app/collectors/)
-- **Binance Futures** — collector now split across three live paths: `/public` for book feeds, `/market` `aggTrade` on its own loop, and `/market` markPrice/liquidations on a separate low-volume loop. Futures trades publish to Redis pub/sub for CVD, use throttled latest-state writes for API inspection, and no longer block mark/index or liquidation freshness. High-frequency `bookTicker` and raw depth deltas do not publish to remote Redis; depth is buffered locally for local-book sync, and futures BBO is derived from the synchronized local book.
-- **Binance Spot** — collector split into separate trade and depth websocket loops. Spot trades feed the feature engine through the in-process queue, and a throttled latest-state spot trade key is written for API inspection. Spot depth stays local, synchronizes a local spot book via REST snapshot + live deltas, and spot BBO is derived from the synchronized local book with bid/ask-price dedupe before publishing.
-- **Binance OI Poller** — REST poller hitting `/fapi/v1/openInterest` every 1 second. OI health is now tracked explicitly with last-success timing, stale detection, consecutive failures, total polls/failures, and last error details.
-- **Bybit** — optional confirmation collector for trades and liquidations (starter-level, passthrough for ticker/orderbook).
+- **Binance Futures** — collector split across three websocket loops: `/public` for depth (local book sync), `/market` aggTrade on its own loop, and `/market` markPrice/liquidations on a separate low-volume loop. Futures trades feed the feature engine through an in-process queue (zero latency) with throttled (~1/sec) latest-state writes for API inspection. Futures BBO is derived from the synchronized local book with price-change deduplication.
+- **Binance Spot** — collector split into separate trade and depth websocket loops. Spot trades feed the feature engine through the same in-process queue with throttled latest-state writes. Spot depth stays local, synchronizes a local spot book via REST snapshot + live deltas, and spot BBO is derived from the synchronized local book with bid/ask-price dedupe.
+- **Binance OI Poller** — REST poller hitting `/fapi/v1/openInterest` every 1 second. Tracks last-success timing, stale detection, consecutive failures, total polls/failures, and last error details.
+- **Bybit** — optional confirmation collector for trades and liquidations (starter-level). Ticker/orderbook topics subscribed but not processed (Section 11).
 - All collectors have reconnect + backoff + logging on disconnect.
 
 ### Data Layer
-- **RedisBus** (`app/bus.py`) — async Redis wrapper for pub/sub + latest-state key/value.
-- **Contract Layer** (`app/contract.py`) — centralized venue constants plus shared Redis channel/key builders for raw events, derived events, latest-state keys, and book-state keys. This is now the source of truth for symbol casing and Redis naming conventions.
-- **Models** (`app/models.py`) — Pydantic schemas for TradeEvent, BBOEvent, BookDeltaEvent, MarkIndexEvent, LiquidationEvent, OpenInterestEvent, FeatureBar, ScoreSnapshot.
-- **LocalBook** (`app/books/`) — shared order book helper for Binance futures and spot, with snapshot bootstrap, delta application, desync detection, and snapshot bridging rules for both the futures `pu` path and the spot `U/u` path. Exposes top-of-book, mid, depth within bps, and imbalance. Futures book state now surfaces best bid/ask prices and sizes, depth imbalance, near-touch depth, sync timing, and book freshness.
+- **RedisBus** (`app/bus.py`) — async Redis wrapper with pub/sub, latest-state key/value, pipelined publish+set, and publish-only methods.
+- **Contract Layer** (`app/contract.py`) — centralized venue constants plus shared Redis channel/key builders. Source of truth for symbol casing and Redis naming conventions.
+- **Models** (`app/models.py`) — Pydantic schemas for all event types and FeatureBar/ScoreSnapshot.
+- **LocalBook** (`app/books/`) — shared order book for futures and spot with snapshot bootstrap, delta bridging (futures `pu` path and spot `U/u` path), desync detection, and depth metrics.
 
 ### Feature Engine (app/features/)
-- Subscribes to raw Redis channels, maintains rolling CVD windows (1s/5s/15s) for perp and spot.
-- Tracks premium history, OI history, liquidation skew (30s window).
-- Emits a `FeatureBar` every 1 second with all computed features.
-- Z-score series for scoring inputs.
-- Futures depth metrics are now real: `book_sync_ok`, `depth_imbalance_5bps`, `depth_imbalance_10bps`, `near_touch_depth_*_usd`, and `depth_pull_*_5s` are computed from the synchronized in-process futures local book.
-- Keeps 60 minutes of in-memory feature and score history (1s cadence ring buffers) for API/dashboard consumers.
-- Tracks per-source lag (`futures_trade`, `spot_trade`, `bbo`, `mark_index`, `oi`) and excludes REST-polled OI from the aggregate real-time lag metric.
+- Receives trades via in-process queue (zero Redis latency), other events via Redis pub/sub.
+- Rolling CVD windows (1s/5s/15s) for perp and spot, premium/OI/liquidation tracking.
+- Real depth metrics from synchronized in-process futures local book.
+- Per-source lag tracking (futures_trade, spot_trade, bbo_futures, bbo_spot, mark_index, oi) with OI excluded from aggregate real-time metric.
+- 60-minute in-memory ring buffers for feature and score history.
 
 ### Score Engine (app/features/scoring.py)
 - Weighted linear score matching the README spec weights.
-- State classification (bullish_pressure / mild_bullish / neutral / mild_bearish / bearish_pressure).
-- Confidence calculation with book sync gating.
-- Reason string generation.
-- 3m and 5m scores are currently scaled placeholders (0.75x and 0.60x of 1m score).
+- Real 3m/5m scores via rolling average of score_1m over 180s/300s.
+- State classification with `degraded` override when futures feed is stale (>1s).
+- Confidence gating: book unsync (cap 0.25), spot stale >2s (0.7x), extreme bullish premium without spot confirmation (cap 0.50).
+- Bidirectional reason strings covering both bullish and bearish signals, plus stale/degraded warnings.
 
 ### API (app/api/main.py)
 - FastAPI on port 8000.
-- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/trade/futures`, `/latest/open-interest/futures`, `/latest/mark-index/futures`, `/latest/liquidation/futures`, `/latest/collector/futures`, `/latest/bbo/spot`, `/latest/trade/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`, `/history/features`, `/history/score`.
-- `/history/features` and `/history/score` return real in-memory history from the live feature engine when started through `run_all.py`.
+- `/health` — reports book sync (futures + spot), last_event_age_ms, per-venue feed ages, per-source lags, OI stale, futures/spot feeds stale.
+- `/latest/*` — score, features, bbo, trade, book, mark-index, liquidation, open-interest, collector state, and `/latest/all` aggregate.
+- `/history/features?minutes=N` and `/history/score?minutes=N` — real in-memory history (requires `run_all.py`; returns empty with message when standalone).
+- 13 API contract tests covering health, latest, and history endpoints.
 
 ### Dashboard (dashboard/app.py)
-- Dash app on port 8050 with dark theme.
-- Live charts: price (perp local-book BBO vs spot local-book BBO or trade fallback), live basis vs exchange premium, perp vs spot CVD 5s, OI delta 30s, liquidation skew 30s.
-- Status block: top-line price/state/score metrics plus separate futures and spot book-sync/source rows.
-- Polls `/latest/all` every 5 seconds.
+- Dash app on port 8050 with dark theme, 5-second polling.
+- Live charts: price (perp vs spot from local books), premium bps, perp CVD 5s.
+- Status bar: price, state, score, confidence, lag, spread, book sync, BBO source.
 
 ### Unified Launcher (run_all.py)
 - Single `python run_all.py` starts everything: futures collector, spot collector, OI poller, feature engine, API server, dashboard.
-- Graceful shutdown on Ctrl+C.
+- Wires in-process trade queue and book reference between collectors and feature engine.
+- Shares feature engine with API for history endpoints.
 
-### Tests
-- `test_bullish_score_positive` — verifies bullish z-score inputs produce positive score.
-- `test_bearish_score_negative` — verifies bearish z-score inputs produce negative score.
-- `test_binance_local_book.py` — covers snapshot bootstrap, spot bridge acceptance via `lastUpdateId + 1`, futures `pu` bridge handling, and continuity mismatch behavior.
-- `test_binance_futures_collector.py` — covers separated routing, trade normalization, mark/index parsing, liquidation payload parsing, and futures feed-age/staleness state.
-- `test_binance_spot_collector.py` — covers spot trade normalization, spot book-delta parsing with optional `pu`, BBO derivation from the synced local book, and spot BBO deduplication behavior.
-- `test_open_interest_poller.py` — covers initial OI health state, success tracking, stale detection, failure tracking, and OI event parsing.
-- `test_feature_engine.py` — covers rolling-window expiry and signed aggregation, z-score min-sample and directionality behavior, p95 lag helper, premium delta logic, and OI delta logic.
+### Tests (59 passing)
+- **Futures collector** (6) — routing, trade normalization, mark/index, liquidation parsing, feed-age state.
+- **Local book** (6) — snapshot bootstrap, bridge acceptance (futures pu + spot U/u), continuity mismatch.
+- **Spot collector** (5) — trade normalization, book delta parsing, BBO from book, BBO dedup.
+- **OI poller** (5) — health state lifecycle, stale detection, failure tracking, event parsing.
+- **Feature engine** (15) — rolling windows, z-scores, p95, premium delta, OI delta, rolling score avg.
+- **Scoring** (9) — bullish, bearish, neutral, book unsync cap, spot stale, premium cap (bullish-only), degraded state, bearish reasons.
+- **API** (13) — health contract, latest endpoints, history with/without engine.
 
 ---
 
 ## Current Phase
 
-**Sections 0 (Bootstrap), 1 (Normalize Contracts), 2 (Binance Futures Collector), 3 (Futures Local Order Book), 4 (Binance Spot Collector), 5 (Open Interest Poller), and 6 (Feature Engine) are complete.**
+**Sections 0–8 are complete.**
 
-Sections 7–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of some later components, but they have not been validated against the correctness checks in each section.
+Sections 9 (Dashboard UI), 10 (Unified Runtime), and 11 (Bybit Confirmation) remain.
 
 ---
 
@@ -77,62 +77,27 @@ Sections 7–11 from the master plan have not been formally worked through yet. 
 | Section | Name | Status | Summary |
 |---------|------|--------|---------|
 | 0 | Bootstrap | **Done** | Scaffold extracted, deps installed, Redis connected, launcher working |
-| 1 | Normalize Contracts | **Done** | Central contract layer added, symbol casing rules standardized, API/collectors/features use shared channel and key builders |
-| 2 | Binance Futures Collector | **Done** | Separated `/public` and `/market` routing validated, futures trade/mark/liquidation normalization checked, feed-age diagnostics added |
-| 3 | Futures Local Order Book | **Done** | Futures local book sync is live, sync telemetry is exposed, and real depth/near-touch/freshness metrics are available to API and features |
-| 4 | Binance Spot Collector | **Done** | Spot trade normalization validated, spot local-book BBO is live, spot latest trade state is exposed, and spot collector tests are in place |
-| 5 | Open Interest Poller | **Done** | OI polling contract validated, `/latest/open-interest/futures` added, and OI lag/stale health is exposed through the API while detailed failure state is tracked in the poller |
-| 6 | Feature Engine | **Done** | Real rolling feature bars are live, per-source lag is tracked, and `/history/features` plus `/history/score` are backed by 60-minute in-memory ring buffers |
-| 7 | Score Engine | Not started | Real 3m/5m scores, confidence gating for stale feeds, degraded state behavior |
-| 8 | FastAPI Server | Not started | Real health reporting, history endpoints, feed age tracking |
-| 9 | Dashboard UI | Not started | Full ribbon, price/state chart, premium chart, CVD chart, depth chart, OI/liq chart, right column |
-| 10 | Unified Runtime | Not started | Startup ordering, graceful shutdown, stale-feed alerts, documentation |
-| 11 | Bybit Confirmation | Not started | Validate Bybit parsing, normalize trades/liquidations, expose confirmation signals |
+| 1 | Normalize Contracts | **Done** | Central contract layer, symbol casing rules, shared channel/key builders |
+| 2 | Binance Futures Collector | **Done** | Separated routing, trade/mark/liquidation normalization, feed-age diagnostics |
+| 3 | Futures Local Order Book | **Done** | Live book sync, sync telemetry, real depth/freshness metrics |
+| 4 | Binance Spot Collector | **Done** | Spot trade normalization, local-book BBO, latest trade state, collector tests |
+| 5 | Open Interest Poller | **Done** | OI contract validated, health tracking, API endpoint, lag/stale handling |
+| 6 | Feature Engine | **Done** | Real rolling features, per-source lag, depth from local book, 60min history |
+| 7 | Score Engine | **Done** | Real 3m/5m rolling scores, confidence gating (book/spot/premium), degraded state, bidirectional reasons |
+| 8 | FastAPI Server | **Done** | Full health reporting, per-venue feed ages, history endpoints, 13 API tests |
+| 9 | Dashboard UI | Not started | Full ribbon, charts, right column |
+| 10 | Unified Runtime | Not started | Startup ordering, documentation |
+| 11 | Bybit Confirmation | Not started | Validate Bybit parsing, expose confirmation signals |
 
 ---
 
 ## Known Issues & Things To Watch
 
 ### Dashboard Performance
-- **The dashboard cannot handle polling faster than 5 seconds.** At 1–2 second intervals the tab shows "Updating..." and becomes unresponsive. This is due to Dash rebuilding the full Plotly figure on every callback. If faster updates are needed later, switch to WebSocket push or Dash clientside callbacks.
-
-### Perp BBO — Root Cause Found
-- The original symptom was stale perp BBO on the dashboard. The root cause chain was:
-- `bookTicker` was stale, so the collector needed a synchronized local depth book.
-- The local book could not complete snapshot bridging because the websocket loop was starved.
-- The websocket loop was starved because every futures `bookTicker` and every raw depth delta performed two round-trips to remote Redis Cloud (`publish` + `set`), which throttled the hot path badly enough that bridging deltas never stayed available.
-- Fix: stop publishing high-frequency futures `bookTicker` and raw depth deltas to remote Redis. Keep depth local for book sync and publish only the derived futures BBO once the local book is synchronized.
-- Operational result: the dashboard should show `perp_bbo: local_book` when the futures book is synced and `perp_bbo: fallback` during startup/resync.
+- **The dashboard cannot handle polling faster than 5 seconds.** Dash rebuilds the full Plotly figure on every callback. For faster updates, switch to WebSocket push or Dash clientside callbacks.
 
 ### Remote Redis Latency
-- **Do not publish high-frequency data to the remote Redis Cloud instance.** Each Redis call is ~50ms round-trip. Publishing every bookTicker or depth delta (10–50 messages/sec) throttles the websocket loop to <1 msg/sec, breaking local book sync and causing stale data. Only publish derived/aggregated state (BBO from synced book, trades, features, scores). Raw depth deltas are consumed locally only.
-
-### Futures Market Path — Resolved
-- The futures `/market` stream originally suffered the same remote Redis throttling issue as the public book path. `aggTrade` volume caused the loop to fall behind, which made `ts_exchange` for trades, mark/index, and liquidations look minutes stale.
-- Fix: split futures trades onto their own websocket loop, keep markPrice and liquidations on a separate low-volume loop, and throttle latest-state trade writes while still publishing trade events for the feature engine.
-- Operational result: futures trade and mark/index timestamps are now close to local time, `/latest/trade/futures` remains available for inspection, and `/latest/collector/futures` exposes public/trade/market feed ages.
-
-### Futures Book Health
-- Futures book sync is now live and exposed through `/latest/book/futures`, including `sync_status`, `sync_reason`, `best_bid/ask`, `depth_imbalance_5bps`, `depth_imbalance_10bps`, `near_touch_bid/ask_usd`, `book_age_ms`, and `book_stale`.
-- The feature engine now reads the synchronized in-process futures book directly for real depth-derived features and `book_sync_ok`.
-
-### Spot BBO — Resolved
-- The original symptom was that spot barely moved relative to perp even when the status showed `spot_px: bbo`. Root cause: spot depth and spot trades shared one websocket loop, and synchronous remote Redis writes for trades starved the depth path.
-- Fix: split spot trades and spot depth into separate websocket loops, keep spot depth local, synchronize a local spot book from REST snapshot + live deltas, and publish only derived spot BBO with bid/ask-price dedupe.
-- Operational result: the dashboard should show `spot_book: synced (snapshot_bridged)` and `spot_px: local_book` when the spot local book is healthy, and `/latest/trade/spot` exposes a throttled latest trade snapshot for debugging and fallback inspection.
-
-### 3m/5m Scores Are Fake
-- `score_3m = 0.75 * score_1m` and `score_5m = 0.60 * score_1m`. These need real rolling score history. Section 7 work.
-
-### History Endpoints Not Implemented
-- `/history/features` and `/history/score` return placeholder responses. Need a storage strategy (Redis sorted sets or in-memory ring buffers). Section 8 work.
+- **Do not publish high-frequency data to the remote Redis Cloud instance.** Each Redis call is ~50ms round-trip. Only publish derived/aggregated state. Raw depth deltas and individual trades are consumed locally via in-process queue.
 
 ### No Raw Event Archival
-- Raw events are published to Redis pub/sub but not persisted. Replay and backtesting require an archive layer (ClickHouse, Parquet, or Redis Streams). Phase 2 work.
-
-### Raw Event Archival Metadata
-- The live Redis contract is now centralized in `app/contract.py`, but archival/replay metadata is still deferred. Raw events are not yet stored in a durable replay format. That remains Phase 2 work.
-
-### OI Health
-- OI is polled over REST, so its exchange timestamp is naturally older than streaming feeds and is tracked separately via `oi_lag_ms_p95`.
-- `/latest/open-interest/futures` exposes the latest normalized OI event, and `/health` now reports OI lag and stale state without polluting the overall real-time feed lag metric.
+- Raw events are not persisted for replay/backtesting. Phase 2 work (ClickHouse, Parquet, or Redis Streams).

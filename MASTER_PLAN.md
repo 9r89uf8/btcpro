@@ -298,24 +298,24 @@ Goal:
 
 Build tasks:
 
-- [ ] Run `uvicorn app.api.main:app --reload`
-- [ ] Upgrade `/health` to report real feed ages and book health
-- [ ] Keep `/latest/score` and `/latest/features` aligned with the normalized state keys
-- [ ] Implement `/history/features?minutes=60`
-- [ ] Implement `/history/score?minutes=60`
-- [ ] Decide the MVP history store: Redis lists/sorted sets or bounded in-memory buffers surfaced safely
+- [x] Run `uvicorn app.api.main:app --reload` (standalone for latest-state; history requires run_all.py)
+- [x] Upgrade `/health` to report real feed ages and book health (last_event_age_ms, futures_feed_age_ms, spot_feed_age_ms, per-venue lags)
+- [x] Keep `/latest/score` and `/latest/features` aligned with the normalized state keys
+- [x] Implement `/history/features?minutes=60`
+- [x] Implement `/history/score?minutes=60`
+- [x] Decide the MVP history store: 60-minute in-memory ring buffers via feature engine
 
 Validation:
 
-- [ ] Endpoint values match Redis state
-- [ ] `/health` reports `book_sync_ok`, `last_event_age_ms`, `futures_feed_age_ms`, and `spot_feed_age_ms`
-- [ ] Response times are acceptable for live UI polling
+- [x] Endpoint values match Redis state
+- [x] `/health` reports `book_sync_ok`, `last_event_age_ms`, `futures_feed_age_ms`, and `spot_feed_age_ms`
+- [x] Response times are acceptable for live UI polling
 
 Tests to add:
 
-- [ ] Health contract test
-- [ ] Latest score/features endpoint tests
-- [ ] History endpoint tests
+- [x] Health contract test (3 tests: empty state, book sync, feed ages)
+- [x] Latest score/features endpoint tests (7 tests: empty, with data, all, trades, books)
+- [x] History endpoint tests (3 tests: without engine, with engine for features and scores)
 
 Definition of done:
 
