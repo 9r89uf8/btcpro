@@ -158,19 +158,19 @@ Goal:
 
 Build tasks:
 
-- [ ] Run `binance_spot.py` standalone
-- [ ] Validate spot trade normalization
-- [ ] Validate spot BBO parsing
-- [ ] Decide whether spot needs a fully synchronized local book or only BBO plus limited depth features
-- [ ] Publish spot events into the unified Redis contract
+- [x] Run `binance_spot.py` standalone
+- [x] Validate spot trade normalization
+- [x] Validate spot BBO parsing (now derived from local book, not bookTicker)
+- [x] Decide whether spot needs a fully synchronized local book or only BBO plus limited depth features (decided: full local book)
+- [x] Publish spot events into the unified Redis contract
 
 Data correctness checks:
 
-- [ ] Spot price is close to futures price
-- [ ] Spot uses the same taker-side logic: `m=true` means taker sold
-- [ ] Spot BBO matches Binance spot UI
-- [ ] Spot `bookTicker` field assumptions are correct
-- [ ] Spot depth delta handling is correct if `pu` is absent or inconsistent
+- [x] Spot price is close to futures price
+- [x] Spot uses the same taker-side logic: `m=true` means taker sold
+- [x] Spot local-book BBO matches Binance spot UI
+- [x] Spot depth delta handling is correct with optional `pu`
+- [x] `ts_exchange` is close to `ts_local` (sub-100ms via in-process queue)
 
 Definition of done:
 
@@ -184,16 +184,16 @@ Goal:
 
 Build tasks:
 
-- [ ] Run `binance_open_interest.py` standalone
-- [ ] Normalize the latest-state key naming to match the rest of the system
-- [ ] Confirm polling rate is acceptable for Binance limits
-- [ ] Surface failures rather than silently swallowing them forever
+- [x] Run `binance_open_interest.py` standalone
+- [x] Normalize the latest-state key naming to match the rest of the system
+- [x] Confirm polling rate is acceptable for Binance limits
+- [x] Surface failures with counters, timestamps, and health payload
 
 Data correctness checks:
 
-- [ ] `open_interest` is in BTC, not USD
-- [ ] `ts_exchange` comes from the REST payload time field
-- [ ] Values are in a plausible range for BTCUSDT futures
+- [x] `open_interest` is in BTC, not USD
+- [x] `ts_exchange` comes from the REST payload time field
+- [x] Values are in a plausible range for BTCUSDT futures
 
 Definition of done:
 

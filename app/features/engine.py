@@ -57,7 +57,12 @@ class FeatureEngine:
         # Depth pull tracking (5s history)
         self._depth_history: deque[tuple[int, float, float]] = deque(maxlen=60)
 
-        self.feed_lags: deque[float] = deque(maxlen=200)
+        # Per-source lag tracking
+        self._lag_futures_trade: deque[float] = deque(maxlen=200)
+        self._lag_spot_trade: deque[float] = deque(maxlen=200)
+        self._lag_bbo: deque[float] = deque(maxlen=200)
+        self._lag_mark_index: deque[float] = deque(maxlen=100)
+        self._lag_oi: deque[float] = deque(maxlen=100)
 
     async def run(self) -> None:
         pubsub = self.bus.client.pubsub()
@@ -80,15 +85,17 @@ class FeatureEngine:
             payload = await self.trade_queue.get()
             now_ms = int(time.time() * 1000)
             ts_exchange = int(payload.get("ts_exchange", now_ms))
-            self.feed_lags.append(max(0.0, now_ms - ts_exchange))
+            lag = max(0.0, now_ms - ts_exchange)
 
             venue = payload.get("venue")
             signed = payload["notional"] if payload["aggressive_side"] == "buy" else -payload["notional"]
             if venue == BINANCE_FUTURES:
+                self._lag_futures_trade.append(lag)
                 self.perp_cvd_1s.add(now_ms, signed)
                 self.perp_cvd_5s.add(now_ms, signed)
                 self.perp_cvd_15s.add(now_ms, signed)
             elif venue == BINANCE_SPOT:
+                self._lag_spot_trade.append(lag)
                 self.spot_cvd_1s.add(now_ms, signed)
                 self.spot_cvd_5s.add(now_ms, signed)
                 self.spot_cvd_15s.add(now_ms, signed)
@@ -102,20 +109,31 @@ class FeatureEngine:
             payload = json.loads(message["data"])
             now_ms = int(time.time() * 1000)
             ts_exchange = int(payload.get("ts_exchange", now_ms))
-            self.feed_lags.append(max(0.0, now_ms - ts_exchange))
+            lag = max(0.0, now_ms - ts_exchange)
 
             if channel == Channels.bbo(BINANCE_FUTURES):
+                self._lag_bbo.append(lag)
                 self.latest_futures_bbo = payload
             elif channel == Channels.bbo(BINANCE_SPOT):
+                self._lag_bbo.append(lag)
                 self.latest_spot_bbo = payload
             elif channel == Channels.mark_index(BINANCE_FUTURES):
+                self._lag_mark_index.append(lag)
                 self.latest_mark_index = payload
                 self.premium_history.append((now_ms, payload["premium_bps"]))
             elif channel == Channels.open_interest(BINANCE_FUTURES):
+                self._lag_oi.append(lag)
                 self.oi_history.append((now_ms, payload["open_interest"]))
             elif channel == Channels.liquidation(BINANCE_FUTURES):
                 signed = payload["notional"] if payload["side"] == "BUY" else -payload["notional"]
                 self.liq_skew_30s.add(now_ms, signed)
+
+    @staticmethod
+    def _p95(d: deque[float]) -> float:
+        if not d:
+            return 0.0
+        s = sorted(d)
+        return s[int(0.95 * (len(s) - 1))]
 
     def _premium_delta_5s(self, now_ms: int) -> float:
         if not self.premium_history:
@@ -162,7 +180,16 @@ class FeatureEngine:
             oi_delta = self._oi_delta_30s(now_ms)
             liq_skew = self.liq_skew_30s.sum(now_ms)
             spread_bps = float(self.latest_futures_bbo["spread_bps"]) if self.latest_futures_bbo else 0.0
-            feed_lag_p95 = sorted(self.feed_lags)[int(0.95 * (len(self.feed_lags) - 1))] if self.feed_lags else 0.0
+
+            # Per-source lag p95
+            ft_lag = self._p95(self._lag_futures_trade)
+            st_lag = self._p95(self._lag_spot_trade)
+            bbo_lag = self._p95(self._lag_bbo)
+            mi_lag = self._p95(self._lag_mark_index)
+            oi_lag = self._p95(self._lag_oi)
+            # Overall: max of real-time feed p95s (excludes OI — it's a REST poll)
+            rt_lags = [v for v in (ft_lag, st_lag, bbo_lag, mi_lag) if v > 0]
+            feed_lag_p95 = max(rt_lags) if rt_lags else 0.0
 
             # Real depth metrics from the local book
             book = self.futures_book
@@ -210,6 +237,11 @@ class FeatureEngine:
                 liq_skew_30s=liq_skew,
                 book_sync_ok=book_sync_ok,
                 feed_lag_ms_p95=feed_lag_p95,
+                futures_trade_lag_ms_p95=ft_lag,
+                spot_trade_lag_ms_p95=st_lag,
+                bbo_lag_ms_p95=bbo_lag,
+                mark_index_lag_ms_p95=mi_lag,
+                oi_lag_ms_p95=oi_lag,
             )
 
             self.z_perp_cvd.add(perp_5)
@@ -235,7 +267,14 @@ class FeatureEngine:
             score_1m = score_linear(inputs)
             score_3m = 0.75 * score_1m
             score_5m = 0.60 * score_1m
-            data_quality_score = 1.0 if book_sync_ok else 0.2
+
+            # Data quality: book sync + OI freshness
+            oi_stale = oi_lag > 30_000  # OI poller should update every 1s; 30s = definitely broken
+            data_quality_score = 1.0
+            if not book_sync_ok:
+                data_quality_score = 0.2
+            elif oi_stale:
+                data_quality_score = 0.6
 
             snapshot = build_score_snapshot(
                 symbol=self.symbol,

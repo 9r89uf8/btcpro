@@ -16,11 +16,22 @@ async def health() -> dict:
     latest_score = await bus.get_json(Keys.score())
     latest_features = await bus.get_json(Keys.feature_bar())
     futures_book = await bus.get_json(Keys.book(BINANCE_FUTURES))
+    futures_collector = await bus.get_json(Keys.collector(BINANCE_FUTURES))
+    features = latest_features or {}
     return {
         "status": "ok",
         "score_available": latest_score is not None,
         "features_available": latest_features is not None,
         "book_sync_ok": bool(futures_book.get("synced")) if futures_book else False,
+        "futures_trade_lag_ms": features.get("futures_trade_lag_ms_p95", None),
+        "spot_trade_lag_ms": features.get("spot_trade_lag_ms_p95", None),
+        "bbo_lag_ms": features.get("bbo_lag_ms_p95", None),
+        "mark_index_lag_ms": features.get("mark_index_lag_ms_p95", None),
+        "oi_lag_ms": features.get("oi_lag_ms_p95", None),
+        "oi_stale": features.get("oi_lag_ms_p95", 0) > 30_000,
+        "futures_feeds_stale": bool(futures_collector.get("public_feed_stale") or
+                                    futures_collector.get("trades_feed_stale") or
+                                    futures_collector.get("market_feed_stale")) if futures_collector else None,
     }
 
 
@@ -37,6 +48,11 @@ async def latest_bbo_futures() -> dict:
 @app.get("/latest/trade/futures")
 async def latest_trade_futures() -> dict:
     return await bus.get_json(Keys.latest("trade", BINANCE_FUTURES)) or {}
+
+
+@app.get("/latest/open-interest/futures")
+async def latest_open_interest_futures() -> dict:
+    return await bus.get_json(Keys.latest("open_interest", BINANCE_FUTURES)) or {}
 
 
 @app.get("/latest/mark-index/futures")
@@ -62,6 +78,11 @@ async def latest_book_futures() -> dict:
 @app.get("/latest/book/spot")
 async def latest_book_spot() -> dict:
     return await bus.get_json(Keys.book(BINANCE_SPOT)) or {}
+
+
+@app.get("/latest/trade/spot")
+async def latest_trade_spot() -> dict:
+    return await bus.get_json(Keys.latest("trade", BINANCE_SPOT)) or {}
 
 
 @app.get("/latest/bbo/spot")

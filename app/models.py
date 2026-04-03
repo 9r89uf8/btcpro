@@ -90,6 +90,11 @@ class FeatureBar(BaseModel):
     liq_skew_30s: float = 0.0
     book_sync_ok: bool = False
     feed_lag_ms_p95: float = 0.0
+    futures_trade_lag_ms_p95: float = 0.0
+    spot_trade_lag_ms_p95: float = 0.0
+    bbo_lag_ms_p95: float = 0.0
+    mark_index_lag_ms_p95: float = 0.0
+    oi_lag_ms_p95: float = 0.0
 
 
 class ScoreSnapshot(BaseModel):

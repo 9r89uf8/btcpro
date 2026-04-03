@@ -11,8 +11,8 @@
 
 ### Collectors (app/collectors/)
 - **Binance Futures** — collector now split across three live paths: `/public` for book feeds, `/market` `aggTrade` on its own loop, and `/market` markPrice/liquidations on a separate low-volume loop. Futures trades publish to Redis pub/sub for CVD, use throttled latest-state writes for API inspection, and no longer block mark/index or liquidation freshness. High-frequency `bookTicker` and raw depth deltas do not publish to remote Redis; depth is buffered locally for local-book sync, and futures BBO is derived from the synchronized local book.
-- **Binance Spot** — collector split into separate trade and depth websocket loops. Trades still publish to Redis for spot CVD. Spot depth stays local, synchronizes a local spot book via REST snapshot + live deltas, and spot BBO is derived from the synchronized local book with bid/ask-price dedupe before publishing.
-- **Binance OI Poller** — REST poller hitting `/fapi/v1/openInterest` every 1 second.
+- **Binance Spot** — collector split into separate trade and depth websocket loops. Spot trades feed the feature engine through the in-process queue, and a throttled latest-state spot trade key is written for API inspection. Spot depth stays local, synchronizes a local spot book via REST snapshot + live deltas, and spot BBO is derived from the synchronized local book with bid/ask-price dedupe before publishing.
+- **Binance OI Poller** — REST poller hitting `/fapi/v1/openInterest` every 1 second. OI health is now tracked explicitly with last-success timing, stale detection, consecutive failures, total polls/failures, and last error details.
 - **Bybit** — optional confirmation collector for trades and liquidations (starter-level, passthrough for ticker/orderbook).
 - All collectors have reconnect + backoff + logging on disconnect.
 
@@ -38,7 +38,7 @@
 
 ### API (app/api/main.py)
 - FastAPI on port 8000.
-- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/trade/futures`, `/latest/mark-index/futures`, `/latest/liquidation/futures`, `/latest/collector/futures`, `/latest/bbo/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`.
+- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/trade/futures`, `/latest/open-interest/futures`, `/latest/mark-index/futures`, `/latest/liquidation/futures`, `/latest/collector/futures`, `/latest/bbo/spot`, `/latest/trade/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`.
 - `/history/features` is a placeholder (not implemented).
 
 ### Dashboard (dashboard/app.py)
@@ -56,14 +56,16 @@
 - `test_bearish_score_negative` — verifies bearish z-score inputs produce negative score.
 - `test_binance_local_book.py` — covers snapshot bootstrap, spot bridge acceptance via `lastUpdateId + 1`, futures `pu` bridge handling, and continuity mismatch behavior.
 - `test_binance_futures_collector.py` — covers separated routing, trade normalization, mark/index parsing, liquidation payload parsing, and futures feed-age/staleness state.
+- `test_binance_spot_collector.py` — covers spot trade normalization, spot book-delta parsing with optional `pu`, BBO derivation from the synced local book, and spot BBO deduplication behavior.
+- `test_open_interest_poller.py` — covers initial OI health state, success tracking, stale detection, failure tracking, and OI event parsing.
 
 ---
 
 ## Current Phase
 
-**Sections 0 (Bootstrap), 1 (Normalize Contracts), 2 (Binance Futures Collector), and 3 (Futures Local Order Book) are complete.**
+**Sections 0 (Bootstrap), 1 (Normalize Contracts), 2 (Binance Futures Collector), 3 (Futures Local Order Book), 4 (Binance Spot Collector), and 5 (Open Interest Poller) are complete.**
 
-Sections 4–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
+Sections 6–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
 
 ---
 
@@ -75,8 +77,8 @@ Sections 4–11 from the master plan have not been formally worked through yet. 
 | 1 | Normalize Contracts | **Done** | Central contract layer added, symbol casing rules standardized, API/collectors/features use shared channel and key builders |
 | 2 | Binance Futures Collector | **Done** | Separated `/public` and `/market` routing validated, futures trade/mark/liquidation normalization checked, feed-age diagnostics added |
 | 3 | Futures Local Order Book | **Done** | Futures local book sync is live, sync telemetry is exposed, and real depth/near-touch/freshness metrics are available to API and features |
-| 4 | Binance Spot Collector | Not started | Validate spot trade normalization, BBO parsing, depth handling |
-| 5 | Open Interest Poller | Not started | Validate OI units (BTC not USD), polling rate, error surfacing |
+| 4 | Binance Spot Collector | **Done** | Spot trade normalization validated, spot local-book BBO is live, spot latest trade state is exposed, and spot collector tests are in place |
+| 5 | Open Interest Poller | **Done** | OI polling contract validated, `/latest/open-interest/futures` added, and OI lag/stale health is exposed through the API while detailed failure state is tracked in the poller |
 | 6 | Feature Engine | Not started | Replace placeholder depth stats, wire real local book, verify rolling window behavior |
 | 7 | Score Engine | Not started | Real 3m/5m scores, confidence gating for stale feeds, degraded state behavior |
 | 8 | FastAPI Server | Not started | Real health reporting, history endpoints, feed age tracking |
@@ -114,7 +116,7 @@ Sections 4–11 from the master plan have not been formally worked through yet. 
 ### Spot BBO — Resolved
 - The original symptom was that spot barely moved relative to perp even when the status showed `spot_px: bbo`. Root cause: spot depth and spot trades shared one websocket loop, and synchronous remote Redis writes for trades starved the depth path.
 - Fix: split spot trades and spot depth into separate websocket loops, keep spot depth local, synchronize a local spot book from REST snapshot + live deltas, and publish only derived spot BBO with bid/ask-price dedupe.
-- Operational result: the dashboard should show `spot_book: synced (snapshot_bridged)` and `spot_px: local_book` when the spot local book is healthy.
+- Operational result: the dashboard should show `spot_book: synced (snapshot_bridged)` and `spot_px: local_book` when the spot local book is healthy, and `/latest/trade/spot` exposes a throttled latest trade snapshot for debugging and fallback inspection.
 
 ### 3m/5m Scores Are Fake
 - `score_3m = 0.75 * score_1m` and `score_5m = 0.60 * score_1m`. These need real rolling score history. Section 7 work.
@@ -128,5 +130,6 @@ Sections 4–11 from the master plan have not been formally worked through yet. 
 ### Raw Event Archival Metadata
 - The live Redis contract is now centralized in `app/contract.py`, but archival/replay metadata is still deferred. Raw events are not yet stored in a durable replay format. That remains Phase 2 work.
 
-### OI Poller Error Handling
-- Now logs warnings on failure instead of silently passing, but does not track consecutive failures or surface them to the health endpoint. Section 5 work.
+### OI Health
+- OI is polled over REST, so its exchange timestamp is naturally older than streaming feeds and is tracked separately via `oi_lag_ms_p95`.
+- `/latest/open-interest/futures` exposes the latest normalized OI event, and `/health` now reports OI lag and stale state without polluting the overall real-time feed lag metric.

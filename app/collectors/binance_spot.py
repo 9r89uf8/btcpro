@@ -30,6 +30,7 @@ class BinanceSpotCollector(BaseCollector):
         self._book_last_sync_ms: int | None = None
         self._last_spot_bbo_key: tuple[float, float] | None = None
         self._trade_queue: asyncio.Queue | None = None
+        self._last_trade_state_write_ms: int = 0
 
     async def run(self) -> None:
         await asyncio.gather(
@@ -52,6 +53,14 @@ class BinanceSpotCollector(BaseCollector):
                         # Push to in-process queue for feature engine (zero latency)
                         if self._trade_queue is not None:
                             self._trade_queue.put_nowait(event.model_dump())
+                        # Throttled latest-state write (~1/sec) so API endpoint works
+                        now = self.now_ms()
+                        if now - self._last_trade_state_write_ms >= 1000:
+                            self._last_trade_state_write_ms = now
+                            await self.bus.set_json(
+                                Keys.latest("trade", BINANCE_SPOT),
+                                event.model_dump(),
+                            )
             except Exception:
                 attempt += 1
                 logger.warning("Spot trades ws disconnected, reconnect attempt %d", attempt, exc_info=True)

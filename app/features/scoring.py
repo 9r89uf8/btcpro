@@ -74,6 +74,8 @@ def reason_strings(feature_bar: FeatureBar) -> list[str]:
         reasons.append("spread elevated")
     if not feature_bar.book_sync_ok:
         reasons.append("book not synchronized")
+    if feature_bar.oi_lag_ms_p95 > 30_000:
+        reasons.append("OI feed stale")
     return reasons
 
 
