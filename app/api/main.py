@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import FastAPI, Query
 
 from app.bus import RedisBus
@@ -123,11 +125,23 @@ async def latest_features() -> dict:
 
 
 @app.get("/history/features")
-async def history_features(minutes: int = Query(default=60, ge=1, le=1440)) -> dict:
-    return {
-        "message": "Not implemented yet",
-        "minutes": minutes,
-    }
+async def history_features(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
+    engine = app.state.feature_engine if hasattr(app.state, "feature_engine") else None
+    if engine is None:
+        return {"bars": [], "message": "Feature engine not connected"}
+    cutoff_ms = int(time.time() * 1000) - minutes * 60_000
+    bars = [b for b in engine.feature_history if b.get("bar_ts", 0) >= cutoff_ms]
+    return {"bars": bars, "count": len(bars), "minutes": minutes}
+
+
+@app.get("/history/score")
+async def history_score(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
+    engine = app.state.feature_engine if hasattr(app.state, "feature_engine") else None
+    if engine is None:
+        return {"scores": [], "message": "Feature engine not connected"}
+    cutoff_ms = int(time.time() * 1000) - minutes * 60_000
+    scores = [s for s in engine.score_history if s.get("ts_local", 0) >= cutoff_ms]
+    return {"scores": scores, "count": len(scores), "minutes": minutes}
 
 
 @app.on_event("shutdown")

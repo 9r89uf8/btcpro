@@ -28,6 +28,8 @@
 - Emits a `FeatureBar` every 1 second with all computed features.
 - Z-score series for scoring inputs.
 - Futures depth metrics are now real: `book_sync_ok`, `depth_imbalance_5bps`, `depth_imbalance_10bps`, `near_touch_depth_*_usd`, and `depth_pull_*_5s` are computed from the synchronized in-process futures local book.
+- Keeps 60 minutes of in-memory feature and score history (1s cadence ring buffers) for API/dashboard consumers.
+- Tracks per-source lag (`futures_trade`, `spot_trade`, `bbo`, `mark_index`, `oi`) and excludes REST-polled OI from the aggregate real-time lag metric.
 
 ### Score Engine (app/features/scoring.py)
 - Weighted linear score matching the README spec weights.
@@ -38,8 +40,8 @@
 
 ### API (app/api/main.py)
 - FastAPI on port 8000.
-- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/trade/futures`, `/latest/open-interest/futures`, `/latest/mark-index/futures`, `/latest/liquidation/futures`, `/latest/collector/futures`, `/latest/bbo/spot`, `/latest/trade/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`.
-- `/history/features` is a placeholder (not implemented).
+- Endpoints: `/health`, `/latest/score`, `/latest/features`, `/latest/bbo/futures`, `/latest/trade/futures`, `/latest/open-interest/futures`, `/latest/mark-index/futures`, `/latest/liquidation/futures`, `/latest/collector/futures`, `/latest/bbo/spot`, `/latest/trade/spot`, `/latest/book/futures`, `/latest/book/spot`, `/latest/all`, `/history/features`, `/history/score`.
+- `/history/features` and `/history/score` return real in-memory history from the live feature engine when started through `run_all.py`.
 
 ### Dashboard (dashboard/app.py)
 - Dash app on port 8050 with dark theme.
@@ -58,14 +60,15 @@
 - `test_binance_futures_collector.py` — covers separated routing, trade normalization, mark/index parsing, liquidation payload parsing, and futures feed-age/staleness state.
 - `test_binance_spot_collector.py` — covers spot trade normalization, spot book-delta parsing with optional `pu`, BBO derivation from the synced local book, and spot BBO deduplication behavior.
 - `test_open_interest_poller.py` — covers initial OI health state, success tracking, stale detection, failure tracking, and OI event parsing.
+- `test_feature_engine.py` — covers rolling-window expiry and signed aggregation, z-score min-sample and directionality behavior, p95 lag helper, premium delta logic, and OI delta logic.
 
 ---
 
 ## Current Phase
 
-**Sections 0 (Bootstrap), 1 (Normalize Contracts), 2 (Binance Futures Collector), 3 (Futures Local Order Book), 4 (Binance Spot Collector), and 5 (Open Interest Poller) are complete.**
+**Sections 0 (Bootstrap), 1 (Normalize Contracts), 2 (Binance Futures Collector), 3 (Futures Local Order Book), 4 (Binance Spot Collector), 5 (Open Interest Poller), and 6 (Feature Engine) are complete.**
 
-Sections 6–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of most components, but they have not been validated against the correctness checks in each section.
+Sections 7–11 from the master plan have not been formally worked through yet. The scaffold code covers starter-level implementations of some later components, but they have not been validated against the correctness checks in each section.
 
 ---
 
@@ -79,7 +82,7 @@ Sections 6–11 from the master plan have not been formally worked through yet. 
 | 3 | Futures Local Order Book | **Done** | Futures local book sync is live, sync telemetry is exposed, and real depth/near-touch/freshness metrics are available to API and features |
 | 4 | Binance Spot Collector | **Done** | Spot trade normalization validated, spot local-book BBO is live, spot latest trade state is exposed, and spot collector tests are in place |
 | 5 | Open Interest Poller | **Done** | OI polling contract validated, `/latest/open-interest/futures` added, and OI lag/stale health is exposed through the API while detailed failure state is tracked in the poller |
-| 6 | Feature Engine | Not started | Replace placeholder depth stats, wire real local book, verify rolling window behavior |
+| 6 | Feature Engine | **Done** | Real rolling feature bars are live, per-source lag is tracked, and `/history/features` plus `/history/score` are backed by 60-minute in-memory ring buffers |
 | 7 | Score Engine | Not started | Real 3m/5m scores, confidence gating for stale feeds, degraded state behavior |
 | 8 | FastAPI Server | Not started | Real health reporting, history endpoints, feed age tracking |
 | 9 | Dashboard UI | Not started | Full ribbon, price/state chart, premium chart, CVD chart, depth chart, OI/liq chart, right column |

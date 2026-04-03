@@ -47,6 +47,10 @@ async def run_services() -> None:
     spot_collector._trade_queue = feature_engine.trade_queue
     feature_engine.futures_book = futures_collector.book
 
+    # Share engine reference with API for history endpoints
+    from app.api.main import app as api_app
+    api_app.state.feature_engine = feature_engine
+
     logger.info("Starting collectors + feature engine...")
 
     tasks = [

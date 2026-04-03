@@ -207,46 +207,46 @@ Goal:
 
 Build tasks:
 
-- [ ] Keep rolling perp CVD windows
-- [ ] Keep rolling spot CVD windows
-- [ ] Track premium and 5-second premium delta
-- [ ] Track OI history and 30-second OI delta
-- [ ] Track liquidation skew over 30 seconds
-- [ ] Wire real depth imbalance and near-touch depth from the local book
-- [ ] Compute depth pull over 5 seconds
-- [ ] Compute feed lag metrics from exchange vs local timestamps
-- [ ] Store latest feature bars and enough short-term history for API/dashboard use
+- [x] Keep rolling perp CVD windows
+- [x] Keep rolling spot CVD windows
+- [x] Track premium and 5-second premium delta
+- [x] Track OI history and 30-second OI delta
+- [x] Track liquidation skew over 30 seconds
+- [x] Wire real depth imbalance and near-touch depth from the local book
+- [x] Compute depth pull over 5 seconds
+- [x] Compute feed lag metrics from exchange vs local timestamps (per-source breakdown)
+- [x] Store latest feature bars and enough short-term history for API/dashboard use (60min ring buffer)
 
 Features that must be real before this section is complete:
 
-- [ ] `perp_cvd_1s`, `perp_cvd_5s`, `perp_cvd_15s`
-- [ ] `spot_cvd_1s`, `spot_cvd_5s`, `spot_cvd_15s`
-- [ ] `premium_bps`, `delta_premium_bps_5s`
-- [ ] `depth_imbalance_5bps`, `depth_imbalance_10bps`
-- [ ] `near_touch_depth_bid_usd`, `near_touch_depth_ask_usd`
-- [ ] `depth_pull_bid_5s`, `depth_pull_ask_5s`
-- [ ] `oi_delta_30s`
-- [ ] `liq_skew_30s`
-- [ ] `book_sync_ok`
-- [ ] `feed_lag_ms_p95`
+- [x] `perp_cvd_1s`, `perp_cvd_5s`, `perp_cvd_15s`
+- [x] `spot_cvd_1s`, `spot_cvd_5s`, `spot_cvd_15s`
+- [x] `premium_bps`, `delta_premium_bps_5s`
+- [x] `depth_imbalance_5bps`, `depth_imbalance_10bps`
+- [x] `near_touch_depth_bid_usd`, `near_touch_depth_ask_usd`
+- [x] `depth_pull_bid_5s`, `depth_pull_ask_5s`
+- [x] `oi_delta_30s`
+- [x] `liq_skew_30s`
+- [x] `book_sync_ok`
+- [x] `feed_lag_ms_p95` (plus per-source: futures_trade, spot_trade, bbo, mark_index, oi)
 
 Validation:
 
-- [ ] `perp_cvd_5s` fluctuates under live trade flow and is not stuck at zero
-- [ ] `spot_cvd_5s` fluctuates when spot trades are present
-- [ ] `delta_premium_bps_5s` stays in a realistic range
-- [ ] `spread_bps` looks realistic for BTCUSDT
-- [ ] `oi_delta_30s` is small relative to total OI
-- [ ] `liq_skew_30s` is near zero most of the time but spikes during liquidation bursts
-- [ ] `feed_lag_ms_p95` remains reasonable in normal conditions
-- [ ] Rolling window trimming works and does not leak memory
+- [x] `perp_cvd_5s` fluctuates under live trade flow and is not stuck at zero
+- [x] `spot_cvd_5s` fluctuates when spot trades are present
+- [x] `delta_premium_bps_5s` stays in a realistic range
+- [x] `spread_bps` looks realistic for BTCUSDT
+- [x] `oi_delta_30s` is small relative to total OI
+- [x] `liq_skew_30s` is near zero most of the time but spikes during liquidation bursts
+- [x] `feed_lag_ms_p95` remains reasonable in normal conditions
+- [x] Rolling window trimming works and does not leak memory
 
 Tests to add:
 
-- [ ] Rolling signed window expiry behavior
-- [ ] Premium delta logic
-- [ ] OI delta logic
-- [ ] Feature-bar assembly from controlled events
+- [x] Rolling signed window expiry behavior
+- [x] Premium delta logic
+- [x] OI delta logic
+- [x] Feature-bar assembly from controlled events (p95 helper, z-score directionality)
 
 Definition of done:
 
@@ -260,28 +260,31 @@ Goal:
 
 Build tasks:
 
-- [ ] Keep the current weighted linear score as the MVP core
-- [ ] Improve the 3-minute and 5-minute score path so they are not just scaled placeholders forever
-- [ ] Add confidence gating for stale feeds and unsynced books
-- [ ] Add degraded state behavior for stale futures data
-- [ ] Improve reason strings so the dashboard can explain state changes clearly
+- [x] Keep the current weighted linear score as the MVP core
+- [x] Improve the 3-minute and 5-minute score path so they are not just scaled placeholders forever (rolling average over 180s/300s)
+- [x] Add confidence gating for stale feeds and unsynced books
+- [x] Add degraded state behavior for stale futures data
+- [x] Improve reason strings so the dashboard can explain state changes clearly (bearish + degraded coverage)
 
 Validation:
 
-- [ ] Bullish z-score inputs produce positive scores
-- [ ] Bearish z-score inputs produce negative scores
-- [ ] All-zero inputs produce a neutral score
-- [ ] `book_sync_ok=False` caps confidence appropriately
-- [ ] Spot staleness lowers confidence
-- [ ] Extreme premium without spot confirmation reduces confidence as intended
+- [x] Bullish z-score inputs produce positive scores
+- [x] Bearish z-score inputs produce negative scores
+- [x] All-zero inputs produce a neutral score
+- [x] `book_sync_ok=False` caps confidence appropriately
+- [x] Spot staleness lowers confidence
+- [x] Extreme premium without spot confirmation reduces confidence as intended
 
 Tests to add:
 
-- [ ] Existing bullish case
-- [ ] Existing bearish case
-- [ ] All-zero neutral case
-- [ ] Confidence cap when book is unsynced
-- [ ] Degraded state or stale-feed behavior
+- [x] Existing bullish case
+- [x] Existing bearish case
+- [x] All-zero neutral case
+- [x] Confidence cap when book is unsynced
+- [x] Degraded state or stale-feed behavior
+- [x] Spot staleness lowers confidence
+- [x] Extreme premium without spot confirmation
+- [x] Bearish reason strings
 
 Definition of done:
 

@@ -57,6 +57,13 @@ class FeatureEngine:
         # Depth pull tracking (5s history)
         self._depth_history: deque[tuple[int, float, float]] = deque(maxlen=60)
 
+        # Score history for 3m/5m rolling averages
+        self._score_1m_history: deque[tuple[int, float]] = deque(maxlen=600)
+
+        # Feature bar + score history (up to 60 minutes at 1s cadence)
+        self.feature_history: deque[dict] = deque(maxlen=3600)
+        self.score_history: deque[dict] = deque(maxlen=3600)
+
         # Per-source lag tracking
         self._lag_futures_trade: deque[float] = deque(maxlen=200)
         self._lag_spot_trade: deque[float] = deque(maxlen=200)
@@ -127,6 +134,14 @@ class FeatureEngine:
             elif channel == Channels.liquidation(BINANCE_FUTURES):
                 signed = payload["notional"] if payload["side"] == "BUY" else -payload["notional"]
                 self.liq_skew_30s.add(now_ms, signed)
+
+    def _rolling_score_avg(self, now_ms: int, window_ms: int) -> float:
+        """Average of score_1m over the given window. Falls back to latest if not enough history."""
+        cutoff = now_ms - window_ms
+        values = [v for ts, v in self._score_1m_history if ts >= cutoff]
+        if not values:
+            return self._score_1m_history[-1][1] if self._score_1m_history else 0.0
+        return sum(values) / len(values)
 
     @staticmethod
     def _p95(d: deque[float]) -> float:
@@ -265,11 +280,16 @@ class FeatureEngine:
             )
 
             score_1m = score_linear(inputs)
-            score_3m = 0.75 * score_1m
-            score_5m = 0.60 * score_1m
+            self._score_1m_history.append((now_ms, score_1m))
+            score_3m = self._rolling_score_avg(now_ms, 180_000)
+            score_5m = self._rolling_score_avg(now_ms, 300_000)
 
-            # Data quality: book sync + OI freshness
-            oi_stale = oi_lag > 30_000  # OI poller should update every 1s; 30s = definitely broken
+            # Data quality: book sync + feed freshness (README thresholds)
+            oi_stale = oi_lag > 30_000
+            # Spot stale: any spot feed >2s (README: "spot feed stale > 2s -> lower confidence")
+            spot_stale = st_lag > 2_000
+            # Futures stale: any futures feed >1s (README: "futures feed stale > 1s -> degraded")
+            futures_stale = max(ft_lag, bbo_lag, mi_lag) > 1_000
             data_quality_score = 1.0
             if not book_sync_ok:
                 data_quality_score = 0.2
@@ -284,10 +304,15 @@ class FeatureEngine:
                 score_5m=score_5m,
                 data_quality_score=data_quality_score,
                 feature_bar=feature_bar,
+                futures_feed_stale=futures_stale,
+                spot_feed_stale=spot_stale,
             )
 
             feature_payload = feature_bar.model_dump()
             score_payload = snapshot.model_dump()
+
+            self.feature_history.append(feature_payload)
+            self.score_history.append(score_payload)
 
             await self.bus.set_json(Keys.feature_bar(), feature_payload)
             await self.bus.set_json(Keys.score(), score_payload)

@@ -58,24 +58,51 @@ def confidence(score_1m: float, score_3m: float, score_5m: float, data_quality_s
 
 def reason_strings(feature_bar: FeatureBar) -> list[str]:
     reasons: list[str] = []
+
+    # Directional signals — bullish
     if feature_bar.perp_cvd_5s > 0:
-        reasons.append("perp_cvd_5s positive")
+        reasons.append("perp CVD positive (taker buying)")
+    elif feature_bar.perp_cvd_5s < 0:
+        reasons.append("perp CVD negative (taker selling)")
+
     if feature_bar.spot_cvd_5s > 0:
-        reasons.append("spot_cvd_5s positive")
-    if feature_bar.delta_premium_bps_5s > 0:
+        reasons.append("spot confirming (taker buying)")
+    elif feature_bar.spot_cvd_5s < 0:
+        reasons.append("spot selling")
+
+    if feature_bar.delta_premium_bps_5s > 0.5:
         reasons.append("premium rising")
-    if feature_bar.depth_imbalance_10bps > 0:
+    elif feature_bar.delta_premium_bps_5s < -0.5:
+        reasons.append("premium falling")
+
+    if feature_bar.depth_imbalance_10bps > 0.1:
         reasons.append("bid depth dominates")
+    elif feature_bar.depth_imbalance_10bps < -0.1:
+        reasons.append("ask depth dominates")
+
     if feature_bar.oi_delta_30s > 0:
-        reasons.append("open interest rising")
+        reasons.append("OI rising")
+    elif feature_bar.oi_delta_30s < 0:
+        reasons.append("OI declining")
+
     if feature_bar.liq_skew_30s > 0:
-        reasons.append("bullish liquidation skew")
+        reasons.append("short liquidation fuel")
+    elif feature_bar.liq_skew_30s < 0:
+        reasons.append("long liquidation fuel")
+
+    # Warnings
     if feature_bar.spread_bps > 0.5:
         reasons.append("spread elevated")
     if not feature_bar.book_sync_ok:
         reasons.append("book not synchronized")
     if feature_bar.oi_lag_ms_p95 > 30_000:
         reasons.append("OI feed stale")
+    if feature_bar.spot_trade_lag_ms_p95 > 2_000:
+        reasons.append("spot feed stale")
+    if max(feature_bar.futures_trade_lag_ms_p95, feature_bar.bbo_lag_ms_p95,
+           feature_bar.mark_index_lag_ms_p95) > 1_000:
+        reasons.append("futures feed stale")
+
     return reasons
 
 
@@ -87,17 +114,33 @@ def build_score_snapshot(
     score_5m: float,
     data_quality_score: float,
     feature_bar: FeatureBar,
+    futures_feed_stale: bool = False,
+    spot_feed_stale: bool = False,
 ) -> ScoreSnapshot:
     conf = confidence(score_1m, score_3m, score_5m, data_quality_score)
+
+    # Confidence gating
     if not feature_bar.book_sync_ok:
         conf = min(conf, 0.25)
+    if spot_feed_stale:
+        conf *= 0.7
+    # Extreme premium without spot confirmation -> cap bullish confidence only
+    if feature_bar.premium_bps > 10 and score_1m > 0 and abs(feature_bar.spot_cvd_5s) < 1000:
+        conf = min(conf, 0.50)
+
+    # State: override to degraded if futures feed is stale
+    if futures_feed_stale:
+        state = "degraded"
+    else:
+        state = classify(score_1m)
+
     return ScoreSnapshot(
         symbol=symbol,
         score_1m=score_1m,
         score_3m=score_3m,
         score_5m=score_5m,
         confidence=conf,
-        state=classify(score_1m),
+        state=state,
         reasons=reason_strings(feature_bar),
         ts_local=ts_local,
     )
