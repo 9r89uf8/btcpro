@@ -329,20 +329,20 @@ Goal:
 
 Build tasks:
 
-- [ ] Build the ribbon with perp mid, spot mid, premium, scores, confidence, lag, and book sync
-- [ ] Build the price/state chart
-- [ ] Build the premium chart
-- [ ] Build the perp and spot CVD chart
-- [ ] Build the depth/spread chart
-- [ ] Build the OI and liquidation chart
-- [ ] Build the right column for reasons, warnings, state changes, and feed health
-- [ ] Decide whether to stay with polling or move to a lower-latency transport later
+- [x] Build the ribbon with perp mid, spot mid, premium, scores, confidence, lag, and book sync
+- [x] Build the price/state chart (with state shading and zero-price filtering)
+- [x] Build the premium chart (exchange premium + delta premium)
+- [x] Build the perp and spot CVD chart (1s/5s/15s for both venues)
+- [x] Build the depth/spread chart (imbalance 5bps/10bps + near-touch depth + spread)
+- [x] Build the OI and liquidation chart (OI delta line + liq skew bars)
+- [x] Build the right column for reasons, warnings, state changes, and feed health
+- [x] Decide whether to stay with polling or move to a lower-latency transport later (polling at 5s/10s; stores bypassed due to Dash callback issues)
 
 Validation:
 
-- [ ] Visual values match API responses
-- [ ] The UI remains readable during degraded feed conditions
-- [ ] History panels load enough recent data to be useful
+- [x] Visual values match API responses
+- [x] The UI remains readable during degraded feed conditions
+- [x] History panels load enough recent data to be useful (10 minutes from in-memory ring buffers)
 
 Definition of done:
 

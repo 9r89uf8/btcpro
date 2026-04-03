@@ -25,7 +25,7 @@ def _ts_labels(points: list[dict], key: str = "ts") -> list[str]:
 
 def price_chart(display_points: list[dict], height: int = 260) -> go.Figure:
     # Filter out points where prices haven't arrived yet (book not synced)
-    display_points = [p for p in display_points if p.get("perp_mid", 0) > 0]
+    display_points = [p for p in display_points if p.get("perp_mid", 0) > 0 and p.get("spot_mid", 0) > 0]
     if not display_points:
         return _empty("Price", height)
     ts = _ts_labels(display_points)
