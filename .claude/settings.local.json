@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -c ':*)",
-      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -m pytest tests/ -v)"
+      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -m pytest tests/ -v)",
+      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -m pytest tests/test_validation.py -v)",
+      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -c \"from dashboard.app import app; print\\('OK'\\)\")",
+      "Bash(C:/Users/alexa/PycharmProjects/Polypro4/.venv/Scripts/python -m pytest tests/ -q)"
     ]
   }
 }

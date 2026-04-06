@@ -171,6 +171,20 @@ async def history_display(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
     return {"points": points, "count": len(points), "minutes": minutes}
 
 
+@app.get("/history/validation")
+async def history_validation(minutes: int = Query(default=30, ge=1, le=55)) -> dict:
+    """Retroactive validation of state predictions."""
+    from app.features.validation import compute_validation
+
+    engine = app.state.feature_engine if hasattr(app.state, "feature_engine") else None
+    if engine is None:
+        return {"horizons": {}, "summary": {}, "recent_transitions": [], "message": "Feature engine not connected"}
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - minutes * 60_000
+    points = [p for p in engine.display_history if p.get("ts", 0) >= cutoff_ms]
+    return compute_validation(points, now_ms)
+
+
 @app.get("/history/score")
 async def history_score(minutes: int = Query(default=5, ge=1, le=60)) -> dict:
     engine = app.state.feature_engine if hasattr(app.state, "feature_engine") else None

@@ -40,20 +40,22 @@
 - FastAPI on port 8000.
 - `/health` — reports book sync (futures + spot), last_event_age_ms, per-venue feed ages, per-source lags, OI stale, futures/spot feeds stale.
 - `/latest/*` — score, features, bbo, trade, book, mark-index, liquidation, open-interest, collector state, and `/latest/all` aggregate.
-- `/history/features?minutes=N` and `/history/score?minutes=N` — real in-memory history (requires `run_all.py`; returns empty with message when standalone).
+- `/history/features?minutes=N`, `/history/score?minutes=N`, and `/history/display?minutes=N` — real in-memory history (requires `run_all.py`; returns empty with message when standalone).
 - 13 API contract tests covering health, latest, and history endpoints.
 
 ### Dashboard (dashboard/app.py)
-- Dash app on port 8050 with dark theme, 5-second polling.
-- Live charts: price (perp vs spot from local books), premium bps, perp CVD 5s.
-- Status bar: price, state, score, confidence, lag, spread, book sync, BBO source.
+- Dash app on port 8050 with a rebuilt two-column layout, separate fast/slow polling loops, and API-backed history.
+- Ribbon: perp mid, spot mid, premium, state badge, score 1m/3m/5m, confidence, lag p95, futures-book sync, spot-book sync.
+- Left column charts: price + state shading, premium + delta premium, CVD, depth/spread, and OI/liquidations.
+- Right column: reasons, warnings, recent state changes, and feed health.
 
 ### Unified Launcher (run_all.py)
 - Single `python run_all.py` starts everything: futures collector, spot collector, OI poller, feature engine, API server, dashboard.
 - Wires in-process trade queue and book reference between collectors and feature engine.
 - Shares feature engine with API for history endpoints.
+- Quick Start in `README.md` documents the one-command startup path and verification URLs.
 
-### Tests (59 passing)
+### Tests (61 passing)
 - **Futures collector** (6) — routing, trade normalization, mark/index, liquidation parsing, feed-age state.
 - **Local book** (6) — snapshot bootstrap, bridge acceptance (futures pu + spot U/u), continuity mismatch.
 - **Spot collector** (5) — trade normalization, book delta parsing, BBO from book, BBO dedup.
@@ -61,14 +63,15 @@
 - **Feature engine** (15) — rolling windows, z-scores, p95, premium delta, OI delta, rolling score avg.
 - **Scoring** (9) — bullish, bearish, neutral, book unsync cap, spot stale, premium cap (bullish-only), degraded state, bearish reasons.
 - **API** (13) — health contract, latest endpoints, history with/without engine.
+- **Smoke** (2) — end-to-end in-process trade flow and one-tick feature-bar/score production.
 
 ---
 
 ## Current Phase
 
-**Sections 0–8 are complete.**
+**Sections 0–10 are complete.**
 
-Sections 9 (Dashboard UI), 10 (Unified Runtime), and 11 (Bybit Confirmation) remain.
+Section 11 (Bybit Confirmation) remains.
 
 ---
 
@@ -85,8 +88,8 @@ Sections 9 (Dashboard UI), 10 (Unified Runtime), and 11 (Bybit Confirmation) rem
 | 6 | Feature Engine | **Done** | Real rolling features, per-source lag, depth from local book, 60min history |
 | 7 | Score Engine | **Done** | Real 3m/5m rolling scores, confidence gating (book/spot/premium), degraded state, bidirectional reasons |
 | 8 | FastAPI Server | **Done** | Full health reporting, per-venue feed ages, history endpoints, 13 API tests |
-| 9 | Dashboard UI | Not started | Full ribbon, charts, right column |
-| 10 | Unified Runtime | Not started | Startup ordering, documentation |
+| 9 | Dashboard UI | **Done** | Rebuilt dashboard with ribbon, five charts, right-column panels, API-backed history, and split polling loops |
+| 10 | Unified Runtime | **Done** | One-command launcher, documented startup path, graceful shutdown, startup logging, and smoke coverage |
 | 11 | Bybit Confirmation | Not started | Validate Bybit parsing, expose confirmation signals |
 
 ---
@@ -95,6 +98,9 @@ Sections 9 (Dashboard UI), 10 (Unified Runtime), and 11 (Bybit Confirmation) rem
 
 ### Dashboard Performance
 - **The dashboard cannot handle polling faster than 5 seconds.** Dash rebuilds the full Plotly figure on every callback. For faster updates, switch to WebSocket push or Dash clientside callbacks.
+
+### Standalone History
+- `/history/features`, `/history/score`, and `/history/display` require `run_all.py` because they read the live in-process feature engine history. Running `uvicorn app.api.main:app` standalone supports latest-state endpoints, but history endpoints return empty with a message.
 
 ### Remote Redis Latency
 - **Do not publish high-frequency data to the remote Redis Cloud instance.** Each Redis call is ~50ms round-trip. Only publish derived/aggregated state. Raw depth deltas and individual trades are consumed locally via in-process queue.

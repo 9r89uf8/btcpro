@@ -50,6 +50,10 @@ app.layout = html.Div(className="main-container", children=[
             html.Div("Feed Health", className="panel-title"),
             html.Div(id="feed-health"),
         ]),
+        html.Div(className="panel", children=[
+            html.Div("Prediction Accuracy", className="panel-title"),
+            html.Div(id="validation-panel"),
+        ]),
     ]),
 ])
 
@@ -264,6 +268,126 @@ def update_health(_):
         rows.append(_row("Last Event", f"{age:.0f}ms ago", age < 5000))
 
     return rows
+
+
+@app.callback(Output("validation-panel", "children"), Input("slow-poll", "n_intervals"))
+def update_validation(_):
+    data = _api_get("/history/validation?minutes=30")
+    if not data:
+        return html.Div("Waiting...", style={"color": "#8b949e"})
+
+    transitions = data.get("recent_transitions", [])
+    qualified = data.get("qualified", {})
+    q_summary = qualified.get("summary", {})
+    raw_summary = data.get("summary", {})
+
+    has_any = (
+        any(q_summary.get(l, {}).get("directional_hit_rate") is not None for l in ["1m", "3m", "5m"])
+        or any(raw_summary.get(l, {}).get("directional_hit_rate") is not None for l in ["1m", "3m", "5m"])
+        or len(transitions) > 0
+    )
+    if not has_any:
+        return html.Div("Waiting for state transitions...", style={"color": "#8b949e"})
+
+    # Headline: qualified hit rates (trusted signals)
+    def _hr_span(label, summary_dict, horizons_dict, prefix=""):
+        s = summary_dict.get(label, {})
+        hr = s.get("directional_hit_rate")
+        h = horizons_dict.get(label, {})
+        n = sum(h.get(f, {}).get("count", 0) for f in ["bullish", "bearish"])
+        if hr is not None:
+            color = "#3fb950" if hr > 0.55 else "#f85149" if hr < 0.45 else "#8b949e"
+            return html.Span(f"{prefix}{label}: {hr:.0%} ({n})", style={"color": color, "marginRight": "10px", "fontWeight": "bold"})
+        return html.Span(f"{prefix}{label}: —", style={"color": "#8b949e", "marginRight": "10px"})
+
+    q_horizons = qualified.get("horizons", {})
+    raw_horizons = data.get("horizons", {})
+
+    headlines = [
+        html.Div([
+            html.Span("Trusted ", style={"color": "#58a6ff", "fontSize": "10px"}),
+            *[_hr_span(l, q_summary, q_horizons) for l in ["1m", "3m", "5m"]],
+        ], style={"marginBottom": "3px"}),
+        html.Div([
+            html.Span("Raw    ", style={"color": "#8b949e", "fontSize": "10px"}),
+            *[_hr_span(l, raw_summary, raw_horizons) for l in ["1m", "3m", "5m"]],
+        ], style={"marginBottom": "6px", "opacity": "0.7"}),
+    ]
+
+    # State accuracy table (from raw view — shows everything)
+    h1m = raw_horizons.get("1m", {})
+    h3m = raw_horizons.get("3m", {})
+    h5m = raw_horizons.get("5m", {})
+
+    table_rows = []
+    for state_name in ["bullish", "neutral", "bearish"]:
+        display_name = state_name.title()
+        cols = [html.Td(display_name, style={"fontWeight": "bold"})]
+        for h in [h1m, h3m, h5m]:
+            s = h.get(state_name, {})
+            hr = s.get("hit_rate")
+            count = s.get("count", 0)
+            if hr is not None and count > 0:
+                color = "#3fb950" if hr > 0.55 else "#f85149" if hr < 0.45 else "#8b949e"
+                cols.append(html.Td(f"{hr:.0%} ({count})", style={"color": color, "textAlign": "center"}))
+            else:
+                cols.append(html.Td("—", style={"color": "#8b949e", "textAlign": "center"}))
+        table_rows.append(html.Tr(cols))
+
+    table = html.Table([
+        html.Thead(html.Tr([
+            html.Th("State"),
+            html.Th("1m", style={"textAlign": "center"}),
+            html.Th("3m", style={"textAlign": "center"}),
+            html.Th("5m", style={"textAlign": "center"}),
+        ])),
+        html.Tbody(table_rows),
+    ], style={"width": "100%", "fontSize": "11px", "borderCollapse": "collapse"})
+
+    # Recent transitions with confidence + qualified badge
+    recent = []
+    for t in transitions[-5:]:
+        conf = t.get("confidence")
+        is_qualified = t.get("qualified", False)
+
+        verdict_badges = []
+        for label in ["1m", "3m", "5m"]:
+            v = t.get(f"verdict_{label}", "pending")
+            bps = t.get(f"outcome_{label}_bps")
+            badge_colors = {
+                "correct": "#3fb950", "wrong": "#f85149",
+                "unclear": "#d29922", "pending": "#8b949e",
+            }
+            text = f"{label}:{v[0].upper()}"
+            if bps is not None:
+                text += f" {bps:+.1f}"
+            verdict_badges.append(html.Span(
+                text,
+                style={"color": badge_colors.get(v, "#8b949e"), "marginRight": "6px", "fontSize": "10px"},
+            ))
+
+        ts_str = datetime.fromtimestamp(t["confirm_ts"] / 1000).strftime("%H:%M:%S") if "confirm_ts" in t else datetime.fromtimestamp(t["ts"] / 1000).strftime("%H:%M:%S")
+        conf_str = f" c={conf:.2f}" if conf is not None else ""
+        score_str = f" s={t.get('score_1m', 0):.2f}" if t.get("score_1m") is not None else ""
+        q_badge = html.Span(" Q", style={"color": "#58a6ff", "fontWeight": "bold", "fontSize": "9px"}) if is_qualified else html.Span("")
+        from_fam = t.get("from_family", t.get("from_state", "?"))[:4]
+        to_fam = t.get("to_family", t.get("to_state", "?"))[:4]
+
+        recent.append(html.Div([
+            html.Span(f"{ts_str} ", style={"color": "#8b949e"}),
+            html.Span(f"{from_fam}>{to_fam}{conf_str}{score_str} ",
+                       style={"color": "#c9d1d9", "fontSize": "10px"}),
+            q_badge,
+            *verdict_badges,
+        ], style={"marginBottom": "3px"}))
+
+    return html.Div([
+        html.Div(headlines),
+        table,
+        html.Div("Recent Transitions", style={"fontSize": "10px", "color": "#8b949e",
+                  "marginTop": "8px", "marginBottom": "4px", "textTransform": "uppercase"}),
+        html.Div(recent if recent else html.Div("No transitions yet", style={"color": "#8b949e"})),
+    ])
 
 
 if __name__ == "__main__":

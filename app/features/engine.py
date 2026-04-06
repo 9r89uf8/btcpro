@@ -338,6 +338,7 @@ class FeatureEngine:
                 "premium_bps": premium_bps,
                 "state": snapshot.state,
                 "score_1m": snapshot.score_1m,
+                "confidence": snapshot.confidence,
             })
 
             await self.bus.set_json(Keys.feature_bar(), feature_payload)
